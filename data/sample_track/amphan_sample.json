@@ -1,0 +1,89 @@
+{
+  "storm_id": "2020139N09086",
+  "name": "AMPHAN",
+  "year": 2020,
+  "basin": "NI",
+  "track_points": [
+    {
+      "step_index": 0,
+      "iso_time": "2020-05-18T00:00:00Z",
+      "lat": 13.4,
+      "lon": 86.4,
+      "wind_speed_knots": 115.0,
+      "pressure_mb": 930.0,
+      "category": "Extremely Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 1,
+      "iso_time": "2020-05-18T12:00:00Z",
+      "lat": 14.7,
+      "lon": 86.3,
+      "wind_speed_knots": 130.0,
+      "pressure_mb": 920.0,
+      "category": "Super Cyclonic Storm"
+    },
+    {
+      "step_index": 2,
+      "iso_time": "2020-05-19T00:00:00Z",
+      "lat": 16.0,
+      "lon": 86.6,
+      "wind_speed_knots": 125.0,
+      "pressure_mb": 925.0,
+      "category": "Super Cyclonic Storm"
+    },
+    {
+      "step_index": 3,
+      "iso_time": "2020-05-19T12:00:00Z",
+      "lat": 17.6,
+      "lon": 87.0,
+      "wind_speed_knots": 110.0,
+      "pressure_mb": 935.0,
+      "category": "Extremely Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 4,
+      "iso_time": "2020-05-20T00:00:00Z",
+      "lat": 19.8,
+      "lon": 87.7,
+      "wind_speed_knots": 95.0,
+      "pressure_mb": 948.0,
+      "category": "Extremely Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 5,
+      "iso_time": "2020-05-20T06:00:00Z",
+      "lat": 20.8,
+      "lon": 88.2,
+      "wind_speed_knots": 85.0,
+      "pressure_mb": 955.0,
+      "category": "Extremely Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 6,
+      "iso_time": "2020-05-20T12:00:00Z",
+      "lat": 21.9,
+      "lon": 88.4,
+      "wind_speed_knots": 80.0,
+      "pressure_mb": 960.0,
+      "category": "Very Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 7,
+      "iso_time": "2020-05-20T18:00:00Z",
+      "lat": 22.7,
+      "lon": 88.5,
+      "wind_speed_knots": 65.0,
+      "pressure_mb": 972.0,
+      "category": "Very Severe Cyclonic Storm"
+    },
+    {
+      "step_index": 8,
+      "iso_time": "2020-05-21T00:00:00Z",
+      "lat": 24.0,
+      "lon": 89.0,
+      "wind_speed_knots": 45.0,
+      "pressure_mb": 988.0,
+      "category": "Cyclonic Storm"
+    }
+  ]
+}
