@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
-from app.domain.provenance import DataSourceMeta
+from app.domain.provenance import DataMode, DataSourceMeta
 
 
 class CycloneWaypoint(BaseModel):
@@ -61,3 +61,45 @@ class CycloneTrack(BaseModel):
     wind_radii: List[WindWarningPolygon] = Field(default_factory=list)
     current_position: Optional[CycloneWaypoint] = None
     provenance: DataSourceMeta
+
+
+class LiveCycloneInfo(BaseModel):
+    """Normalized operational representation of an active tropical cyclone from live feeds."""
+
+    source: str = "GDACS"
+    data_mode: DataMode = DataMode.LIVE
+    event_id: str
+    episode_id: Optional[str] = None
+    storm_name: str
+    is_active: bool = True
+    current_lat: float
+    current_lon: float
+    wind_speed_kmh: Optional[float] = None
+    wind_speed_kts: Optional[float] = None
+    intensity_text: Optional[str] = None
+    alert_level: Optional[str] = None
+    alert_score: Optional[float] = None
+    affected_countries: List[str] = Field(default_factory=list)
+    issued_at: Optional[str] = None
+    modified_at: Optional[str] = None
+    fetched_at: str
+    central_pressure_mb: Optional[float] = None  # Strictly nullable, never fabricated
+    heading_deg: Optional[float] = None          # Strictly nullable, never fabricated
+    track: Optional[List[Dict[str, Any]]] = None
+    hazard_polygons: Optional[List[Dict[str, Any]]] = None
+    source_url: Optional[str] = None
+    provenance: Optional[DataSourceMeta] = None
+
+
+class LiveCycloneStatusResponse(BaseModel):
+    """Normalized operational response for live cyclone status."""
+
+    source: str = "GDACS"
+    data_mode: str = "LIVE"
+    live_status: str  # "ACTIVE", "CALM", "UNAVAILABLE"
+    active_cyclone: Optional[bool] = None  # True if ACTIVE, False if CALM, None if UNAVAILABLE
+    cyclone: Optional[LiveCycloneInfo] = None
+    fetched_at: str
+    last_successful_sync: Optional[str] = None
+    message: str
+

@@ -19,13 +19,15 @@ export default function RiskSummaryPanel({
   const props = riskData?.properties || {};
 
   // Count by risk level
-  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  const counts = { CRITICAL: 0, HIGH: 0, MODERATE: 0, LOW: 0 };
   const typeCounts = { hospital: 0, power_substation: 0, power_station: 0, road_arterial: 0, shelter: 0 };
   features.forEach((f) => {
-    const p = f.properties;
-    const lvl = p.risk_level;
+    const p = f.properties || {};
+    let lvl = (p.risk_level || 'LOW').toUpperCase();
+    if (lvl === 'MEDIUM') lvl = 'MODERATE';
     if (counts[lvl] !== undefined) counts[lvl]++;
-    if (typeCounts[p.infra_type] !== undefined) typeCounts[p.infra_type]++;
+    const infra = p.infra_type || p.category;
+    if (typeCounts[infra] !== undefined) typeCounts[infra]++;
   });
 
   const total = features.length;
@@ -52,7 +54,7 @@ export default function RiskSummaryPanel({
   const riskColors = {
     CRITICAL: { bar: '#dc2626', text: '#fca5a5' },
     HIGH: { bar: '#d97706', text: '#fcd34d' },
-    MEDIUM: { bar: '#ca8a04', text: '#fde68a' },
+    MODERATE: { bar: '#ca8a04', text: '#fde68a' },
     LOW: { bar: '#16a34a', text: '#86efac' },
   };
 

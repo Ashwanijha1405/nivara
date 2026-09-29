@@ -30,7 +30,7 @@ export default function AdvisoryPanel({ advisoryData, isLoading = false }) {
     const l = (level || '').toUpperCase();
     if (l === 'CRITICAL') return 'risk-chip risk-chip--critical';
     if (l === 'HIGH') return 'risk-chip risk-chip--high';
-    if (l === 'MEDIUM') return 'risk-chip risk-chip--medium';
+    if (l === 'MODERATE' || l === 'MEDIUM') return 'risk-chip risk-chip--moderate';
     return 'risk-chip risk-chip--low';
   };
 
@@ -38,7 +38,8 @@ export default function AdvisoryPanel({ advisoryData, isLoading = false }) {
     const l = (level || '').toUpperCase();
     if (l === 'CRITICAL') return '#dc2626';
     if (l === 'HIGH') return '#d97706';
-    return '#ca8a04';
+    if (l === 'MODERATE' || l === 'MEDIUM') return '#ca8a04';
+    return '#16a34a';
   };
 
   const renderDistrict = (adv, idx) => {

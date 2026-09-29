@@ -123,3 +123,59 @@ def test_system_status_endpoint():
         assert expected in sources
         assert "status" in sources[expected]
         assert "latency_ms" in sources[expected]
+
+
+def test_canonical_risk_response_and_coordinates():
+    """Verify canonical risk response structure, [longitude, latitude] GeoJSON coordinates, and risk-level vocabulary."""
+    res = client.get("/api/storms/2020136N10088/risk?step_index=12")
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["type"] == "FeatureCollection"
+    assert "features" in data
+    assert "assets" in data
+    assert len(data["features"]) > 0
+    assert len(data["assets"]) > 0
+
+    valid_levels = {"LOW", "MODERATE", "HIGH", "CRITICAL"}
+
+    for feat in data["features"]:
+        assert feat["type"] == "Feature"
+        geom = feat["geometry"]
+        assert geom["type"] == "Point"
+        coords = geom["coordinates"]
+        assert len(coords) == 2
+        lon, lat = coords
+        # Longitude and latitude bounds for India/Bay of Bengal corridor
+        assert -180.0 <= lon <= 180.0
+        assert -90.0 <= lat <= 90.0
+        # Specifically verify [lon, lat] order: in Bay of Bengal region, lon is ~80-95, lat is ~18-26
+        assert 80.0 <= lon <= 95.0, f"Expected longitude first (80-95), got {lon}"
+        assert 15.0 <= lat <= 30.0, f"Expected latitude second (15-30), got {lat}"
+
+        props = feat["properties"]
+        assert props["risk_level"] in valid_levels
+        assert props["risk_level"] != "MEDIUM"
+
+    for asset in data["assets"]:
+        # Requirement 1: Each item must contain at minimum:
+        # id, name, category, latitude, longitude, risk_score, risk_level, hazard, exposure, vulnerability
+        for field in [
+            "id",
+            "name",
+            "category",
+            "latitude",
+            "longitude",
+            "risk_score",
+            "risk_level",
+            "hazard",
+            "exposure",
+            "vulnerability",
+        ]:
+            assert field in asset, f"Missing required canonical field '{field}'"
+
+        assert 80.0 <= asset["longitude"] <= 95.0
+        assert 15.0 <= asset["latitude"] <= 30.0
+        assert 0.0 <= asset["risk_score"] <= 1.0
+        assert asset["risk_level"] in valid_levels
+        assert asset["risk_level"] != "MEDIUM"

@@ -58,7 +58,7 @@ Respond STRICTLY with valid JSON matching this schema:
 {
   "district": "string",
   "state": "string",
-  "risk_level": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+  "risk_level": "CRITICAL" | "HIGH" | "MODERATE" | "LOW",
   "headline": "string",
   "key_risks": ["hazard 1", "hazard 2", "hazard 3"],
   "recommended_actions": ["action 1", "action 2", "action 3"],
@@ -97,7 +97,7 @@ Generate the early-warning advisory JSON now."""
 
 def build_fallback_advisory(data: DistrictRiskSummaryInput) -> DistrictAdvisoryResult:
     """Deterministic fallback advisory if Gemini API is unavailable or rate-limited."""
-    level = "CRITICAL" if data.max_risk_score >= 0.80 else "HIGH" if data.max_risk_score >= 0.60 else "MEDIUM"
+    level = "CRITICAL" if data.max_risk_score >= 0.80 else "HIGH" if data.max_risk_score >= 0.60 else "MODERATE"
     
     headline = f"Urgent Pre-Landfall Cyclone Warning for {data.district}"
     if level == "CRITICAL":

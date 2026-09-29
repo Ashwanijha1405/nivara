@@ -14,11 +14,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.config import get_settings
+from app.data_sources.gdacs.gdacs_adapter import GDACSAdapter
 from app.data_sources.gee.gee_adapter import GEEAdapter
 from app.data_sources.ibtracs.ibtracs_adapter import IBTrACSAdapter
 from app.data_sources.imd.imd_adapter import IMDAdapter
 from app.data_sources.open_meteo.open_meteo_adapter import OpenMeteoAdapter
 from app.data_sources.osm.osm_adapter import OSMAdapter
+from app.domain.cyclone import LiveCycloneStatusResponse
 from app.domain.provenance import DataMode, DataSourceMeta
 from app.domain.risk import ModelledRiskResult
 from app.services.advisory_engine import AdvisoryEngineService
@@ -36,6 +38,7 @@ router = APIRouter(prefix="/api", tags=["disaster-intelligence"])
 settings = get_settings()
 
 # Initialize Domain Adapters
+gdacs_adapter = GDACSAdapter()
 imd_adapter = IMDAdapter(base_url=settings.imd_bulletin_url)
 ibtracs_adapter = IBTrACSAdapter(data_dir=settings.data_dir)
 open_meteo_adapter = OpenMeteoAdapter(base_url=settings.open_meteo_base_url)
@@ -53,6 +56,7 @@ osm_adapter = OSMAdapter(
 # Initialize Core Services
 risk_engine = RiskEngineService()
 live_monitor = LiveMonitorService(
+    gdacs_adapter=gdacs_adapter,
     imd_adapter=imd_adapter,
     open_meteo=open_meteo_adapter,
     osm_adapter=osm_adapter,
@@ -65,6 +69,10 @@ advisory_engine = AdvisoryEngineService(
     model_name=settings.gemini_model,
 )
 report_service = ReportService()
+
+# In-memory caches keyed strictly by storm_id + step_index + timestamp
+_storm_risk_cache: Dict[str, Dict[str, Any]] = {}
+_storm_advisory_cache: Dict[str, Dict[str, Any]] = {}
 
 
 # ==============================================================================
@@ -115,31 +123,51 @@ async def list_storms() -> List[Dict[str, Any]]:
     """Return catalog of verified historical cyclones and active operational feeds."""
     catalog = ibtracs_adapter.get_historical_catalog()
 
-    # Check if IMD currently has an active tropical system
-    imd_status = await imd_adapter.get_current_basin_status()
-    if imd_status.is_active_cyclone:
-        catalog.insert(
-            0,
-            {
-                "storm_id": "IMD_LIVE_CURRENT",
-                "name": "ACTIVE BASIN DISTURBANCE",
-                "season": 2026,
-                "basin": "NI",
-                "peak_intensity": "Active Operational Storm",
-                "peak_winds_knots": 45.0,
-                "min_pressure_mb": 994.0,
-                "landfall_area": "Monitoring Sector",
-                "landfall_date": "Active",
-                "total_timesteps": 6,
-                "provenance": {
-                    "source": "India Meteorological Department (IMD)",
-                    "status": "LIVE",
-                    "dataset": "Operational Cyclone Warning Center",
+    # Check if GDACS currently has an active tropical system in North Indian Ocean
+    try:
+        gdacs_status = await gdacs_adapter.get_live_cyclone_status()
+        if gdacs_status.live_status == "ACTIVE" and gdacs_status.cyclone:
+            c = gdacs_status.cyclone
+            catalog.insert(
+                0,
+                {
+                    "storm_id": f"GDACS_{c.event_id}",
+                    "name": c.storm_name.upper(),
+                    "season": 2026,
+                    "basin": "NI",
+                    "peak_intensity": c.intensity_text or f"Active Storm ({c.alert_level or 'ALERT'})",
+                    "peak_winds_knots": c.wind_speed_kts or 45.0,
+                    "min_pressure_mb": c.central_pressure_mb,
+                    "landfall_area": ", ".join(c.affected_countries) if c.affected_countries else "Coastal Sector",
+                    "landfall_date": "Active Live Storm",
+                    "total_timesteps": len(c.track) if c.track else 1,
+                    "provenance": {
+                        "source": "GDACS (UN OCHA / EC JRC)",
+                        "status": "LIVE",
+                        "dataset": "Real-Time Tropical Cyclone Ingestion",
+                    },
                 },
-            },
-        )
+            )
+    except Exception:
+        pass
 
     return catalog
+
+
+@router.get("/storms/live", summary="Get real-time cyclone status from GDACS", response_model=LiveCycloneStatusResponse)
+async def get_live_cyclone_status() -> LiveCycloneStatusResponse:
+    """Retrieve real-time cyclone status from GDACS (ACTIVE, CALM, or UNAVAILABLE)."""
+    return await gdacs_adapter.get_live_cyclone_status()
+
+
+@router.get("/storms/live/track", summary="Get GeoJSON trajectory and hazard polygons for active cyclone")
+async def get_live_cyclone_track() -> Dict[str, Any]:
+    """Retrieve full live storm track and hazard polygons as GeoJSON.
+    
+    Returns empty FeatureCollection if no active cyclone (CALM), or UNAVAILABLE status representation.
+    """
+    return await gdacs_adapter.get_live_track_geojson()
+
 
 
 @router.get("/storms/{storm_id}", summary="Get metadata for a specific storm")
@@ -243,6 +271,11 @@ async def get_storm_timestep_risk(
     bounded_step = max(0, min(step_index, len(track.waypoints) - 1))
     target_point = track.waypoints[bounded_step]
 
+    # Check cache first (storm_id + step_index + timestamp)
+    cache_key = f"{track.storm_id}_{target_point.step_index}_{target_point.timestamp}"
+    if cache_key in _storm_risk_cache:
+        return _storm_risk_cache[cache_key]
+
     # Fetch infrastructure assets from OSM
     infra_assets = await osm_adapter.fetch_infrastructure()
 
@@ -259,23 +292,27 @@ async def get_storm_timestep_risk(
 
     evaluated_assets.sort(key=lambda a: a.modelled_risk_score, reverse=True)
 
-    # Format into GeoJSON
+    # Format into canonical GeoJSON
     features = []
     for a in evaluated_assets:
         features.append(
             {
                 "type": "Feature",
+                "id": a.id,
                 "geometry": {
                     "type": "Point",
                     "coordinates": [
-                        a.exposure.distance_to_coastline_km,  # will map from asset coords
+                        a.longitude,
+                        a.latitude,
                     ],
                 },
                 "properties": a.model_dump(),
             }
         )
 
-    return {
+    has_hazard_data = target_point.wind_speed_knots is not None and target_point.wind_speed_knots >= 0
+    response_payload = {
+        "type": "FeatureCollection",
         "storm_id": track.storm_id,
         "storm_name": track.name,
         "step_index": target_point.step_index,
@@ -283,11 +320,25 @@ async def get_storm_timestep_risk(
         "cyclone_center": {"lat": target_point.lat, "lon": target_point.lon},
         "wind_speed_knots": target_point.wind_speed_knots,
         "category": target_point.category,
+        "hazard_status": "AVAILABLE" if has_hazard_data else "UNAVAILABLE",
+        "data_available": has_hazard_data,
         "total_assets_evaluated": len(evaluated_assets),
         "critical_assets_count": sum(1 for a in evaluated_assets if a.risk_level in ["CRITICAL", "HIGH"]),
         "assets": [a.model_dump() for a in evaluated_assets],
+        "features": features,
         "provenance": track.provenance.model_dump(),
     }
+    _storm_risk_cache[cache_key] = response_payload
+    return response_payload
+
+
+@router.get("/storms/{storm_id}/timesteps/{step_index}/risk", include_in_schema=False)
+async def get_storm_timestep_risk_alias(
+    storm_id: str,
+    step_index: int,
+) -> Dict[str, Any]:
+    """Backwards-compatible path alias for timestep risk evaluation."""
+    return await get_storm_timestep_risk(storm_id=storm_id, step_index=step_index)
 
 
 @router.get("/storms/{storm_id}/advisory", summary="Grounded operational briefing from Gemini 3.7 Flash")
@@ -297,6 +348,13 @@ async def get_storm_advisory(
 ) -> Dict[str, Any]:
     """Generate Gemini 3.7 Flash operational advisory grounded on evaluated assets."""
     risk_data = await get_storm_timestep_risk(storm_id=storm_id, step_index=step_index)
+    actual_step = risk_data.get("step_index", step_index)
+    timestamp = risk_data.get("timestamp", "")
+    advisory_cache_key = f"{storm_id}_{actual_step}_{timestamp}"
+
+    if advisory_cache_key in _storm_advisory_cache:
+        return _storm_advisory_cache[advisory_cache_key]
+
     assets_raw = risk_data.get("assets", [])
 
     if not assets_raw:
@@ -328,14 +386,16 @@ async def get_storm_advisory(
         )
         advisories.append(adv.model_dump())
 
-    return {
+    advisory_payload = {
         "storm_id": storm_id,
         "storm_name": risk_data.get("storm_name"),
-        "step_index": step_index,
-        "timestamp": risk_data.get("timestamp"),
+        "step_index": actual_step,
+        "timestamp": timestamp,
         "advisories": advisories,
         "disclaimer": "AI-GENERATED ADVISORY — Grounded on modelled risk inputs. Review with SDMA protocols.",
     }
+    _storm_advisory_cache[advisory_cache_key] = advisory_payload
+    return advisory_payload
 
 
 # ==============================================================================

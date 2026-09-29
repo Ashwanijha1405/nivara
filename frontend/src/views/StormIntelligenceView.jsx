@@ -16,7 +16,7 @@ export default function StormIntelligenceView({ onSelectAsset, selectedAsset }) 
   const [storms, setStorms] = useState([]);
   const [selectedStormId, setSelectedStormId] = useState('2020136N10088');
   const [trackData, setTrackData] = useState(null);
-  const [currentStepIndex, setCurrentStepIndex] = useState(12);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [riskData, setRiskData] = useState(null);
   const [advisoryData, setAdvisoryData] = useState(null);
   const [isLoadingAdvisory, setIsLoadingAdvisory] = useState(false);
@@ -46,19 +46,43 @@ export default function StormIntelligenceView({ onSelectAsset, selectedAsset }) 
 
   useEffect(() => {
     if (!selectedStormId) return;
+    let active = true;
+
     fetchStormRisk(selectedStormId, currentStepIndex)
-      .then(setRiskData)
+      .then((data) => {
+        if (active) setRiskData(data);
+      })
       .catch(console.error);
 
     setIsLoadingAdvisory(true);
-    fetchStormAdvisory(selectedStormId, currentStepIndex)
-      .then(setAdvisoryData)
-      .catch(console.error)
-      .finally(() => setIsLoadingAdvisory(false));
+    const timer = setTimeout(() => {
+      fetchStormAdvisory(selectedStormId, currentStepIndex)
+        .then((data) => {
+          if (active) setAdvisoryData(data);
+        })
+        .catch(console.error)
+        .finally(() => {
+          if (active) setIsLoadingAdvisory(false);
+        });
+    }, 150);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [selectedStormId, currentStepIndex]);
 
   const waypoints = trackData?.features?.filter((f) => f.properties?.feature_type === 'storm_center') || [];
-  const currentPoint = waypoints[currentStepIndex]?.properties || {};
+  const maxStep = Math.max(0, waypoints.length - 1);
+  const clampedStepIndex = waypoints.length > 0 ? Math.min(Math.max(0, currentStepIndex), maxStep) : 0;
+
+  useEffect(() => {
+    if (waypoints.length > 0 && currentStepIndex > maxStep) {
+      setCurrentStepIndex(maxStep);
+    }
+  }, [waypoints.length, maxStep, currentStepIndex]);
+
+  const currentPoint = waypoints[clampedStepIndex]?.properties || {};
   const currentStorm = storms.find((s) => s.storm_id === selectedStormId) || { name: 'AMPHAN' };
 
   return (
@@ -169,16 +193,17 @@ export default function StormIntelligenceView({ onSelectAsset, selectedAsset }) 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: 'monospace', marginBottom: 6 }}>
             <span style={{ color: '#64748b' }}>TIMESTEP SCRUBBER</span>
             <span style={{ color: '#f1f5f9', fontWeight: 700 }}>
-              {currentStepIndex + 1} / {waypoints.length || 1}
+              {waypoints.length === 0 ? '— / —' : `${clampedStepIndex + 1} / ${waypoints.length}`}
             </span>
           </div>
           <input
             type="range"
             min={0}
-            max={Math.max(0, waypoints.length - 1)}
-            value={currentStepIndex}
+            max={maxStep}
+            value={clampedStepIndex}
+            disabled={waypoints.length <= 1}
             onChange={(e) => setCurrentStepIndex(Number(e.target.value))}
-            style={{ width: '100%', cursor: 'pointer' }}
+            style={{ width: '100%', cursor: waypoints.length <= 1 ? 'not-allowed' : 'pointer' }}
           />
         </div>
       </div>
@@ -187,15 +212,8 @@ export default function StormIntelligenceView({ onSelectAsset, selectedAsset }) 
       <div style={{ height: '100%', position: 'relative' }}>
         <OpenSource3DMap
           trackData={trackData}
-          infrastructure={riskData?.assets?.map((a) => ({
-            id: a.asset_id,
-            name: a.asset_name,
-            category: a.category,
-            lat: currentPoint.lat ? currentPoint.lat + 0.5 : 22.0,
-            lon: currentPoint.lon ? currentPoint.lon + 0.5 : 88.0,
-            elevation_m: a.vulnerability.terrain_elevation_m,
-            modelled_risk: a.modelled_risk_score,
-          })) || []}
+          currentStepIndex={clampedStepIndex}
+          infrastructure={riskData?.assets || []}
           onSelectAsset={onSelectAsset}
           selectedAsset={selectedAsset}
           activeLayers={{ track: true, infrastructure: true, hazards: true }}

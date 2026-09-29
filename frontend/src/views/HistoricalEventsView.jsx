@@ -38,9 +38,15 @@ export default function HistoricalEventsView({ onSelectAsset, selectedAsset }) {
 
   useEffect(() => {
     if (!selectedStormId) return;
+    let active = true;
     fetchStormRisk(selectedStormId, stepIndex)
-      .then(setRiskData)
+      .then((data) => {
+        if (active) setRiskData(data);
+      })
       .catch(console.error);
+    return () => {
+      active = false;
+    };
   }, [selectedStormId, stepIndex]);
 
   const waypoints = trackData?.features?.filter((f) => f.properties?.feature_type === 'storm_center') || [];
@@ -149,15 +155,8 @@ export default function HistoricalEventsView({ onSelectAsset, selectedAsset }) {
       <div style={{ height: '100%', position: 'relative' }}>
         <OpenSource3DMap
           trackData={trackData}
-          infrastructure={riskData?.assets?.map((a) => ({
-            id: a.asset_id,
-            name: a.asset_name,
-            category: a.category,
-            lat: currentPoint.lat ? currentPoint.lat + 0.4 : 22.0,
-            lon: currentPoint.lon ? currentPoint.lon + 0.4 : 88.0,
-            elevation_m: a.vulnerability.terrain_elevation_m,
-            modelled_risk: a.modelled_risk_score,
-          })) || []}
+          currentStepIndex={stepIndex}
+          infrastructure={riskData?.assets || []}
           onSelectAsset={onSelectAsset}
           selectedAsset={selectedAsset}
           activeLayers={{ track: true, infrastructure: true, hazards: true }}

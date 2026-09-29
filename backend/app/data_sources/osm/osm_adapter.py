@@ -60,16 +60,17 @@ out body 60;"""
         Raises:
             RuntimeError: If query fails and demo mode is disabled.
         """
+        # 1. In-memory Cache Check (<0.01ms)
+        if self._cached_assets is not None and len(self._cached_assets) >= 10:
+            return self._cached_assets
+
         bbox_key = f"{round(min_lat, 1)}_{round(min_lon, 1)}_{round(max_lat, 1)}_{round(max_lon, 1)}"
 
-        # 1. High-speed SQLite Cache Check (<2ms)
+        # 2. High-speed SQLite Cache Check (<2ms)
         cached_sqlite = self.spatial_cache.get_assets_by_bbox(bbox_key)
         if cached_sqlite:
             self._cached_assets = cached_sqlite
             return cached_sqlite
-
-        if self._cached_assets is not None and len(self._cached_assets) >= 10:
-            return self._cached_assets
 
         query = self.build_query(min_lat, min_lon, max_lat, max_lon)
         headers = {

@@ -74,7 +74,7 @@ def test_compute_land_cover_factor():
 def test_classify_risk_level():
     """Verify score mapping into categorical risk levels."""
     assert classify_risk_level(0.20) == "LOW"
-    assert classify_risk_level(0.35) == "MEDIUM"
+    assert classify_risk_level(0.35) == "MODERATE"
     assert classify_risk_level(0.65) == "HIGH"
     assert classify_risk_level(0.85) == "CRITICAL"
 

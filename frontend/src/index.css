@@ -145,3 +145,36 @@ input[type="range"]::-webkit-slider-thumb {
   border: 2px solid var(--bg-panel);
   cursor: pointer;
 }
+
+/* Authoritative Risk Badges */
+.risk-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.risk-chip--critical {
+  background-color: rgba(220, 38, 38, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(220, 38, 38, 0.4);
+}
+.risk-chip--high {
+  background-color: rgba(234, 88, 12, 0.2);
+  color: #fdba74;
+  border: 1px solid rgba(234, 88, 12, 0.4);
+}
+.risk-chip--moderate, .risk-chip--medium {
+  background-color: rgba(202, 138, 4, 0.2);
+  color: #fde047;
+  border: 1px solid rgba(202, 138, 4, 0.4);
+}
+.risk-chip--low {
+  background-color: rgba(22, 163, 74, 0.2);
+  color: #86efac;
+  border: 1px solid rgba(22, 163, 74, 0.4);
+}
+

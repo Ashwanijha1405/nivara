@@ -19,6 +19,7 @@ class IBTrACSAdapter:
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
+        self._track_cache: Dict[str, CycloneTrack] = {}
 
     def get_historical_catalog(self) -> List[Dict[str, Any]]:
         """List available historical cyclone archives with NOAA metadata."""
@@ -86,13 +87,15 @@ class IBTrACSAdapter:
             FileNotFoundError: If the requested storm does not exist.
         """
         clean_id = storm_id.strip()
+        if clean_id in self._track_cache:
+            return self._track_cache[clean_id]
         filename = None
 
         if "2020136N10088" in clean_id or "amphan" in clean_id.lower():
             filename = "amphan_noaa.json"
         elif "2024145N14087" in clean_id or "remal" in clean_id.lower():
             filename = "remal_noaa.json"
-        elif "fani" in clean_id.lower():
+        elif "2019117N10087" in clean_id or "fani" in clean_id.lower():
             filename = "fani_noaa.json"
 
         if not filename:
@@ -131,7 +134,7 @@ class IBTrACSAdapter:
             )
 
         now_utc = datetime.now(timezone.utc).isoformat()
-        return CycloneTrack(
+        track = CycloneTrack(
             storm_id=raw.get("storm_id", storm_id),
             name=raw.get("name", "CYCLONE"),
             season=int(raw.get("year", 2020)),
@@ -149,3 +152,5 @@ class IBTrACSAdapter:
                 attribution="NOAA IBTrACS dataset. Public domain official historical re-analysis.",
             ),
         )
+        self._track_cache[clean_id] = track
+        return track

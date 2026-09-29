@@ -35,7 +35,7 @@ class InfraRiskProperties(BaseModel):
     dist_to_coast_km: float = Field(..., description="Distance from coastline in km")
     land_cover_class: str = Field(..., description="Land cover type")
     risk_score: float = Field(..., ge=0.0, le=1.0, description="Composite risk score")
-    risk_level: RiskLevel = Field(..., description="LOW, MEDIUM, HIGH, CRITICAL")
+    risk_level: RiskLevel = Field(..., description="LOW, MODERATE, HIGH, CRITICAL")
     risk_breakdown: RiskBreakdown
 
 

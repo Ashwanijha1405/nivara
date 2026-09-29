@@ -18,7 +18,7 @@ from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-RiskLevel = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+RiskLevel = Literal["LOW", "MODERATE", "HIGH", "CRITICAL", "UNAVAILABLE"]
 
 
 @dataclass(frozen=True)
@@ -65,9 +65,9 @@ def compute_proximity_factor(distance_km: float, max_radius_km: float = 300.0) -
     return round(max(0.0, min(1.0, factor)), 3)
 
 
-def compute_wind_intensity_factor(wind_speed_knots: float, max_reference_knots: float = 140.0) -> float:
+def compute_wind_intensity_factor(wind_speed_knots: Optional[float], max_reference_knots: float = 140.0) -> float:
     """Calculate normalized wind intensity risk factor relative to Super Cyclone threshold."""
-    if wind_speed_knots <= 0.0:
+    if wind_speed_knots is None or wind_speed_knots <= 0.0:
         return 0.0
 
     ratio = min(wind_speed_knots / max_reference_knots, 1.0)
@@ -118,13 +118,13 @@ def compute_land_cover_factor(land_cover_class: str) -> float:
 
 
 def classify_risk_level(score: float) -> RiskLevel:
-    """Categorize continuous score into discrete risk level: LOW, MEDIUM, HIGH, CRITICAL."""
+    """Categorize continuous score into discrete risk level: LOW, MODERATE, HIGH, CRITICAL."""
     if score >= 0.75:
         return "CRITICAL"
     if score >= 0.55:
         return "HIGH"
     if score >= 0.30:
-        return "MEDIUM"
+        return "MODERATE"
     return "LOW"
 
 
@@ -143,7 +143,7 @@ def compute_haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: f
 
 def compute_composite_risk(
     dist_from_track_km: float,
-    wind_speed_knots: float,
+    wind_speed_knots: Optional[float],
     elevation_m: float,
     dist_to_coast_km: float,
     land_cover_class: str,
@@ -155,6 +155,19 @@ def compute_composite_risk(
     correctly report negligible cyclone risk before storm arrival.
     """
     w = weights or RiskWeights()
+
+    if wind_speed_knots is None or wind_speed_knots < 0:
+        return RiskScoreResult(
+            risk_score=0.0,
+            risk_level="UNAVAILABLE",
+            breakdown=RiskBreakdown(
+                proximity_factor=0.0,
+                wind_intensity_factor=0.0,
+                elevation_vulnerability=compute_elevation_vulnerability(elevation_m),
+                coastal_exposure=compute_coastal_exposure(dist_to_coast_km),
+                land_cover_multiplier=compute_land_cover_factor(land_cover_class),
+            ),
+        )
 
     p_factor = compute_proximity_factor(dist_from_track_km, max_radius_km=300.0)
     w_factor = compute_wind_intensity_factor(wind_speed_knots)
