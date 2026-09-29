@@ -140,7 +140,7 @@ async def list_storms() -> List[Dict[str, Any]]:
                     "season": 2026,
                     "basin": "NI",
                     "peak_intensity": c.intensity_text or f"Active Storm ({c.alert_level or 'ALERT'})",
-                    "peak_winds_knots": c.wind_speed_kts or 45.0,
+                    "peak_winds_knots": c.wind_speed_kts,
                     "min_pressure_mb": c.central_pressure_mb,
                     "landfall_area": ", ".join(c.affected_countries) if c.affected_countries else "Coastal Sector",
                     "landfall_date": "Active Live Storm",
@@ -171,6 +171,100 @@ async def get_live_cyclone_track() -> Dict[str, Any]:
     Returns empty FeatureCollection if no active cyclone (CALM), or UNAVAILABLE status representation.
     """
     return await gdacs_adapter.get_live_track_geojson()
+
+
+@router.get("/storms/live/risk", summary="Evaluate infrastructure risk for currently active cyclone")
+async def get_live_cyclone_risk() -> Dict[str, Any]:
+    """Compute decomposed hazard, exposure, vulnerability, and modelled risk for active GDACS cyclone.
+    
+    Returns empty FeatureCollection if no active cyclone (CALM), or UNAVAILABLE status representation.
+    """
+    gdacs_status = await gdacs_adapter.get_live_cyclone_status()
+    now_str = gdacs_status.fetched_at
+
+    if gdacs_status.live_status == "UNAVAILABLE":
+        return {
+            "type": "FeatureCollection",
+            "properties": {
+                "status": "UNAVAILABLE",
+                "live_status": "UNAVAILABLE",
+                "source": "GDACS (UN OCHA / EC JRC)",
+                "data_mode": "LIVE",
+                "retrieved_at": now_str,
+                "last_successful_sync": gdacs_status.last_successful_sync,
+                "message": gdacs_status.message,
+            },
+            "features": [],
+            "assets": [],
+        }
+
+    if gdacs_status.live_status == "CALM" or not gdacs_status.cyclone:
+        return {
+            "type": "FeatureCollection",
+            "properties": {
+                "status": "CALM",
+                "live_status": "CALM",
+                "source": "GDACS (UN OCHA / EC JRC)",
+                "data_mode": "LIVE",
+                "retrieved_at": now_str,
+                "last_successful_sync": gdacs_status.last_successful_sync,
+                "message": "No active tropical cyclone in North Indian Ocean basin (Bay of Bengal / Arabian Sea).",
+            },
+            "features": [],
+            "assets": [],
+        }
+
+    c = gdacs_status.cyclone
+    infra_assets = await osm_adapter.fetch_infrastructure()
+
+    evaluated_assets: List[ModelledRiskResult] = []
+    for asset in infra_assets:
+        res = risk_engine.evaluate_asset(
+            asset=asset,
+            cyclone_lat=c.current_lat,
+            cyclone_lon=c.current_lon,
+            cyclone_wind_knots=c.wind_speed_kts,
+            data_mode=DataMode.LIVE,
+        )
+        evaluated_assets.append(res)
+
+    evaluated_assets.sort(key=lambda a: a.modelled_risk_score, reverse=True)
+
+    features = []
+    for a in evaluated_assets:
+        features.append(
+            {
+                "type": "Feature",
+                "id": a.id,
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [a.longitude, a.latitude],
+                },
+                "properties": a.model_dump(),
+            }
+        )
+
+    return {
+        "type": "FeatureCollection",
+        "properties": {
+            "status": "ACTIVE",
+            "live_status": "ACTIVE",
+            "storm_name": c.storm_name,
+            "event_id": c.event_id,
+            "source": "GDACS (UN OCHA / EC JRC)",
+            "data_mode": "LIVE",
+            "retrieved_at": now_str,
+            "last_successful_sync": gdacs_status.last_successful_sync,
+        },
+        "cyclone_center": {"lat": c.current_lat, "lon": c.current_lon},
+        "wind_speed_knots": c.wind_speed_kts,
+        "wind_speed_kmh": c.wind_speed_kmh,
+        "alert_level": c.alert_level,
+        "total_assets_evaluated": len(evaluated_assets),
+        "critical_assets_count": sum(1 for a in evaluated_assets if a.risk_level in ["CRITICAL", "HIGH"]),
+        "assets": [a.model_dump() for a in evaluated_assets],
+        "features": features,
+    }
 
 
 

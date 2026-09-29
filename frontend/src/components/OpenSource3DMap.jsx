@@ -91,7 +91,7 @@ export function buildInfraFeatureCollection(infrastructure) {
  * Matches by properties.step_index or falls back to array index.
  */
 export function extractCurrentStormFeature(trackData, stepIndex) {
-  if (!trackData?.features || stepIndex === null || stepIndex === undefined || stepIndex < 0) {
+  if (!trackData?.features) {
     return null;
   }
   const points = trackData.features.filter(
@@ -99,12 +99,16 @@ export function extractCurrentStormFeature(trackData, stepIndex) {
   );
   if (points.length === 0) return null;
 
-  let match = points.find((f) => f.properties?.step_index === stepIndex);
-  if (!match) {
-    const idx = Math.min(Math.max(0, stepIndex), points.length - 1);
-    match = points[idx];
+  if (stepIndex !== null && stepIndex !== undefined && stepIndex >= 0) {
+    let match = points.find((f) => f.properties?.step_index === stepIndex);
+    if (!match) {
+      const idx = Math.min(Math.max(0, stepIndex), points.length - 1);
+      match = points[idx];
+    }
+    return match || null;
   }
-  return match || null;
+
+  return points[0] || null;
 }
 
 /**
@@ -221,8 +225,10 @@ export default function OpenSource3DMap({
       }
 
       const coords = feature.geometry.coordinates; // [longitude, latitude]
-      const category = feature.properties?.cyclone_category;
-      const windKts = feature.properties?.wind_speed_knots;
+      const name = feature.properties?.storm_name;
+      const category = feature.properties?.cyclone_category || feature.properties?.alert_level;
+      const windKts = feature.properties?.wind_speed_knots ?? feature.properties?.wind_speed_kts;
+      const windKmh = feature.properties?.wind_speed_kmh;
 
       if (!currentStormMarkerRef.current) {
         const el = document.createElement('div');
@@ -252,7 +258,10 @@ export default function OpenSource3DMap({
 
       const el = currentStormMarkerRef.current.getElement();
       if (el) {
-        el.innerHTML = `🌀 CURRENT STORM${category ? ` · ${category}` : ''}${windKts ? ` (${windKts} kts)` : ''}`;
+        const stormLabel = name ? `🌀 ${name}` : '🌀 CURRENT STORM';
+        const catLabel = category ? ` · ${category}` : '';
+        const windLabel = windKts ? ` (${windKts} kts${windKmh ? ` / ${windKmh} km/h` : ''})` : '';
+        el.innerHTML = `${stormLabel}${catLabel}${windLabel}`;
       }
 
       currentStormMarkerRef.current.setLngLat(coords).addTo(mapRef.current);
@@ -431,12 +440,68 @@ export default function OpenSource3DMap({
         data: trackData || { type: 'FeatureCollection', features: [] },
       });
 
-      // Track line (visible on satellite)
+      // 1a. Uncertainty Cone Fill & Outline (GDACS Poly_Cones)
+      map.addLayer({
+        id: 'hazard-cone-fill',
+        type: 'fill',
+        source: 'storm-track',
+        filter: ['==', ['get', 'feature_type'], 'uncertainty_cone'],
+        paint: {
+          'fill-color': '#38bdf8',
+          'fill-opacity': 0.18,
+        },
+      });
+
+      map.addLayer({
+        id: 'hazard-cone-outline',
+        type: 'line',
+        source: 'storm-track',
+        filter: ['==', ['get', 'feature_type'], 'uncertainty_cone'],
+        paint: {
+          'line-color': '#38bdf8',
+          'line-width': 1.5,
+          'line-dasharray': [3, 2],
+          'line-opacity': 0.75,
+        },
+      });
+
+      // 1b. Wind Hazard Polygons (GDACS WindRadii / PointRadii)
+      map.addLayer({
+        id: 'hazard-polygon-fill',
+        type: 'fill',
+        source: 'storm-track',
+        filter: ['in', ['get', 'feature_type'], ['literal', ['wind_hazard_polygon', 'hazard_polygon']]],
+        paint: {
+          'fill-color': [
+            'case',
+            ['==', ['get', 'alertlevel'], 'Red'],
+            '#ef4444',
+            ['==', ['get', 'alertlevel'], 'Orange'],
+            '#f97316',
+            '#eab308',
+          ],
+          'fill-opacity': 0.22,
+        },
+      });
+
+      map.addLayer({
+        id: 'hazard-polygon-outline',
+        type: 'line',
+        source: 'storm-track',
+        filter: ['in', ['get', 'feature_type'], ['literal', ['wind_hazard_polygon', 'hazard_polygon']]],
+        paint: {
+          'line-color': '#f97316',
+          'line-width': 1.5,
+          'line-opacity': 0.85,
+        },
+      });
+
+      // 1c. Observed & Historical Track Line (solid white)
       map.addLayer({
         id: 'track-line',
         type: 'line',
         source: 'storm-track',
-        filter: ['==', ['get', 'feature_type'], 'track_path'],
+        filter: ['in', ['get', 'feature_type'], ['literal', ['track_path', 'observed_track']]],
         paint: {
           'line-color': '#f8fafc',
           'line-width': 2.5,
@@ -444,12 +509,25 @@ export default function OpenSource3DMap({
         },
       });
 
-      // Track waypoints
+      // 1d. Forecast Track Line (dashed blue)
+      map.addLayer({
+        id: 'forecast-track-line',
+        type: 'line',
+        source: 'storm-track',
+        filter: ['==', ['get', 'feature_type'], 'forecast_track'],
+        paint: {
+          'line-color': '#60a5fa',
+          'line-width': 2.5,
+          'line-dasharray': [3, 2],
+        },
+      });
+
+      // 1e. Track waypoints
       map.addLayer({
         id: 'track-waypoints',
         type: 'circle',
         source: 'storm-track',
-        filter: ['==', ['get', 'feature_type'], 'storm_center'],
+        filter: ['in', ['get', 'feature_type'], ['literal', ['storm_center', 'waypoint']]],
         paint: {
           'circle-radius': 4.5,
           'circle-color': '#f59e0b',
@@ -708,10 +786,11 @@ export default function OpenSource3DMap({
     updateSimulation();
   }, [updateSimulation]);
 
-  // Update track data
+  // Update track data reactively (clears when empty or null)
   useEffect(() => {
-    if (!mapRef.current || !isLoadedRef.current || !trackData) return;
-    mapRef.current.getSource('storm-track')?.setData(trackData);
+    if (!mapRef.current || !isLoadedRef.current) return;
+    const data = trackData || { type: 'FeatureCollection', features: [] };
+    mapRef.current.getSource('storm-track')?.setData(data);
   }, [trackData]);
 
   // Update infrastructure data
@@ -720,6 +799,57 @@ export default function OpenSource3DMap({
     const fc = buildInfraFeatureCollection(infrastructure);
     mapRef.current.getSource('infra-source')?.setData(fc);
   }, [infrastructure]);
+
+  // Reactive layer visibility control
+  useEffect(() => {
+    if (!mapRef.current || !isLoadedRef.current) return;
+    const map = mapRef.current;
+    const setVisibility = (layerId, visible) => {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+      }
+    };
+
+    const trackVisible = activeLayers?.track !== false;
+    setVisibility('track-line', trackVisible);
+    setVisibility('forecast-track-line', trackVisible);
+    setVisibility('track-waypoints', trackVisible);
+    setVisibility('current-storm-halo', trackVisible);
+    setVisibility('current-storm-core', trackVisible);
+    setVisibility('current-storm-eye', trackVisible);
+    if (currentStormMarkerRef.current) {
+      currentStormMarkerRef.current.getElement().style.display = trackVisible ? 'flex' : 'none';
+    }
+
+    const hazardVisible = activeLayers?.hazards !== false;
+    setVisibility('hazard-cone-fill', hazardVisible);
+    setVisibility('hazard-cone-outline', hazardVisible);
+    setVisibility('hazard-polygon-fill', hazardVisible);
+    setVisibility('hazard-polygon-outline', hazardVisible);
+    setVisibility('simulation-hazard-fill', hazardVisible);
+    setVisibility('simulation-hazard-outline', hazardVisible);
+
+    const infraVisible = activeLayers?.infrastructure !== false;
+    setVisibility('infra-heatmap', infraVisible);
+    setVisibility('infra-markers', infraVisible);
+  }, [activeLayers]);
+
+  // Auto-pan towards active cyclone when trackData has a valid NIO storm center
+  useEffect(() => {
+    if (!mapRef.current || !isLoadedRef.current || isScenario || !trackData) return;
+    const center = extractCurrentStormFeature(trackData, currentStepIndex);
+    if (center?.geometry?.coordinates) {
+      const [lon, lat] = center.geometry.coordinates;
+      if (lon >= 50 && lon <= 100 && lat >= 0 && lat <= 32) {
+        mapRef.current.flyTo({
+          center: [lon, lat],
+          zoom: 6.5,
+          pitch: 35,
+          essential: false,
+        });
+      }
+    }
+  }, [trackData, isScenario]);
 
   // Fly to asset on selection
   useEffect(() => {
@@ -878,11 +1008,23 @@ export default function OpenSource3DMap({
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 14, height: 2, backgroundColor: '#f8fafc' }} />
-              <span>Storm Trajectory</span>
+              <span>Observed Track</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 14, height: 2, backgroundColor: '#60a5fa', borderTop: '2px dashed #60a5fa' }} />
+              <span>Forecast Track</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(56, 189, 248, 0.25)', border: '1px dashed #38bdf8', display: 'inline-block' }} />
+              <span>Uncertainty Cone</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(249, 115, 22, 0.25)', border: '1px solid #f97316', display: 'inline-block' }} />
+              <span>Hazard Radii</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: '#dc2626', border: '2px solid #ffffff', display: 'inline-block' }} />
-              <span>Current Storm</span>
+              <span>Storm Center</span>
             </div>
           </>
         )}

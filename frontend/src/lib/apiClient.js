@@ -44,6 +44,18 @@ export async function fetchLiveSnapshot() {
   return request('/api/live/snapshot');
 }
 
+export async function fetchLiveCycloneStatus() {
+  return request('/api/storms/live');
+}
+
+export async function fetchLiveCycloneTrack() {
+  return request('/api/storms/live/track');
+}
+
+export async function fetchLiveCycloneRisk() {
+  return request('/api/storms/live/risk');
+}
+
 export async function fetchSystemStatus() {
   return request('/api/system/status');
 }

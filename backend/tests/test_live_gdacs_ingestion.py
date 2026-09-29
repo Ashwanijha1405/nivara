@@ -368,3 +368,131 @@ async def test_caching_and_last_sync_retention(monkeypatch):
     assert status_fail.active_cyclone is None
     # Verify retention of last_successful_sync
     assert status_fail.last_successful_sync == last_sync
+
+
+@pytest.mark.anyio
+async def test_live_cyclone_operational_risk_active_integration(monkeypatch):
+    """Verify that active GDACS cyclone coordinates and wind reach the risk engine in both snapshot and risk routes."""
+    from app.api.routes import gdacs_adapter
+
+    mock_active_status = LiveCycloneStatusResponse(
+        source="GDACS",
+        data_mode="LIVE",
+        live_status="ACTIVE",
+        active_cyclone=True,
+        cyclone=LiveCycloneInfo(
+            source="GDACS",
+            data_mode="LIVE",
+            event_id="999001",
+            episode_id="1",
+            storm_name="STAGE2_TEST_STORM",
+            is_active=True,
+            current_lat=20.5,
+            current_lon=88.0,
+            wind_speed_kmh=185.2,
+            wind_speed_kts=100.0,
+            intensity_text="Very Severe Cyclonic Storm",
+            alert_level="Red",
+            alert_score=3.0,
+            affected_countries=["India", "Bangladesh"],
+            fetched_at="2026-09-29T12:00:00Z",
+            central_pressure_mb=None,  # Nullable, never fabricated
+            heading_deg=35.0,
+        ),
+        fetched_at="2026-09-29T12:00:00Z",
+        last_successful_sync="2026-09-29T12:00:00Z",
+        message="Active tropical cyclone detected.",
+    )
+
+    async def mock_get_status():
+        return mock_active_status
+
+    monkeypatch.setattr(gdacs_adapter, "get_live_cyclone_status", mock_get_status)
+
+    # 1. Test /api/storms/live/risk
+    res_risk = client.get("/api/storms/live/risk")
+    assert res_risk.status_code == 200
+    risk_data = res_risk.json()
+
+    assert risk_data["properties"]["status"] == "ACTIVE"
+    assert risk_data["cyclone_center"]["lat"] == 20.5
+    assert risk_data["cyclone_center"]["lon"] == 88.0
+    assert risk_data["wind_speed_knots"] == 100.0
+    assert risk_data["total_assets_evaluated"] > 0
+    assert len(risk_data["features"]) > 0
+
+    # Verify that asset risk evaluations reflect real storm coordinates (20.5, 88.0)
+    for feat in risk_data["features"]:
+        props = feat["properties"]
+        hazard = props["hazard"]
+        # Cyclone proximity must be calculated from (20.5, 88.0), NOT Digha (21.628, 87.514)
+        assert hazard["cyclone_proximity_km"] > 0
+        assert hazard["storm_center_wind_knots"] == 100.0
+
+    # 2. Test /api/live/snapshot
+    from app.api.routes import live_monitor
+    live_monitor._cached_snapshot = None
+    live_monitor._last_refresh_utc = None
+    monkeypatch.setattr(live_monitor.gdacs, "get_live_cyclone_status", mock_get_status)
+
+    res_snap = client.get("/api/live/snapshot")
+    assert res_snap.status_code == 200
+    snap_data = res_snap.json()
+
+    assert snap_data["live_status"] == "ACTIVE"
+    assert snap_data["active_threat_detected"] is True
+    assert "STAGE2_TEST_STORM" in snap_data["threat_title"]
+    assert snap_data["live_cyclone"]["current_lat"] == 20.5
+    assert snap_data["live_cyclone"]["current_lon"] == 88.0
+    assert snap_data["critical_facilities_exposed"] >= 0
+
+
+def test_live_cyclone_operational_risk_calm_and_unavailable(monkeypatch):
+    """Verify /api/storms/live/risk under CALM and UNAVAILABLE states."""
+    from app.api.routes import gdacs_adapter
+
+    # 1. CALM state
+    mock_calm = LiveCycloneStatusResponse(
+        source="GDACS",
+        data_mode="LIVE",
+        live_status="CALM",
+        active_cyclone=False,
+        cyclone=None,
+        fetched_at="2026-09-29T12:00:00Z",
+        last_successful_sync="2026-09-29T12:00:00Z",
+        message="No active tropical cyclone detected.",
+    )
+
+    async def mock_calm_status():
+        return mock_calm
+
+    monkeypatch.setattr(gdacs_adapter, "get_live_cyclone_status", mock_calm_status)
+    res_calm = client.get("/api/storms/live/risk")
+    assert res_calm.status_code == 200
+    calm_data = res_calm.json()
+    assert calm_data["properties"]["status"] == "CALM"
+    assert len(calm_data["features"]) == 0
+    assert len(calm_data["assets"]) == 0
+
+    # 2. UNAVAILABLE state
+    mock_unavail = LiveCycloneStatusResponse(
+        source="GDACS",
+        data_mode="LIVE",
+        live_status="UNAVAILABLE",
+        active_cyclone=None,
+        cyclone=None,
+        fetched_at="2026-09-29T12:00:00Z",
+        last_successful_sync="2026-09-29T11:00:00Z",
+        message="GDACS feed unreachable.",
+    )
+
+    async def mock_unavail_status():
+        return mock_unavail
+
+    monkeypatch.setattr(gdacs_adapter, "get_live_cyclone_status", mock_unavail_status)
+    res_unavail = client.get("/api/storms/live/risk")
+    assert res_unavail.status_code == 200
+    unavail_data = res_unavail.json()
+    assert unavail_data["properties"]["status"] == "UNAVAILABLE"
+    assert unavail_data["properties"]["last_successful_sync"] == "2026-09-29T11:00:00Z"
+    assert len(unavail_data["features"]) == 0

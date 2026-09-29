@@ -271,7 +271,7 @@ class LiveMonitorService:
         if infra_assets and is_active and gdacs_status.cyclone:
             c_lat = gdacs_status.cyclone.current_lat
             c_lon = gdacs_status.cyclone.current_lon
-            wind_kts = gdacs_status.cyclone.wind_speed_kts or 45.0
+            wind_kts = gdacs_status.cyclone.wind_speed_kts  # Direct genuine wind without fallback
 
             for asset in infra_assets:
                 risk_res = self.risk_engine.evaluate_asset(
@@ -302,6 +302,7 @@ class LiveMonitorService:
         elif infra_assets:
             # CALM or UNAVAILABLE: Baseline infrastructure monitoring only.
             # Do NOT treat Digha benchmark as a cyclone center!
+            is_unavail = gdacs_status.live_status == "UNAVAILABLE"
             for asset in infra_assets[:8]:
                 top_exposed.append(
                     {
@@ -315,7 +316,7 @@ class LiveMonitorService:
                         "dist_to_coast_km": asset.dist_to_coast_km,
                         "risk_score": 0.0,
                         "modelled_risk": 0.0,
-                        "risk_level": "LOW",
+                        "risk_level": "UNAVAILABLE" if is_unavail else "LOW",
                     }
                 )
 
