@@ -1,15 +1,12 @@
 /**
- * Centralized API Client for Backend Services.
+ * Centralized API Client for Nivara Disaster Intelligence Services.
  *
- * All HTTP fetch calls to the FastAPI backend MUST be isolated in this file.
- * Frontend React components must never call fetch() directly.
+ * All HTTP fetch calls to the FastAPI backend are strictly centralized here.
+ * Components must never call fetch() directly.
  */
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
-/**
- * Generic helper for handling HTTP errors and JSON parsing.
- */
 async function request(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
   try {
@@ -24,7 +21,7 @@ async function request(endpoint, options = {}) {
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
       throw new Error(
-        errorBody.detail || `Request to ${endpoint} failed with HTTP status ${response.status}`
+        errorBody.detail || `Request to ${endpoint} failed with HTTP ${response.status}`
       );
     }
 
@@ -35,39 +32,63 @@ async function request(endpoint, options = {}) {
   }
 }
 
-/**
- * Fetch catalog of available historical cyclone tracks.
- * @returns {Promise<Array<{storm_id: string, name: string, year: number, basin: string}>>}
- */
+// ── Live Operations & System Status ──
+
+export async function fetchLiveSnapshot() {
+  return request('/api/live/snapshot');
+}
+
+export async function fetchSystemStatus() {
+  return request('/api/system/status');
+}
+
+// ── Storm Intelligence & Historical Events ──
+
 export async function fetchStormCatalog() {
   return request('/api/storms');
 }
 
-/**
- * Fetch full storm track GeoJSON sequence (trajectory and center positions).
- * @param {string} stormId
- * @returns {Promise<GeoJSON.FeatureCollection>}
- */
+export async function fetchStormDetails(stormId) {
+  return request(`/api/storms/${encodeURIComponent(stormId)}`);
+}
+
 export async function fetchStormTrack(stormId) {
   return request(`/api/storms/${encodeURIComponent(stormId)}/track`);
 }
 
-/**
- * Fetch infrastructure risk points GeoJSON for a specific timestep.
- * @param {string} stormId
- * @param {number} stepIndex
- * @returns {Promise<GeoJSON.FeatureCollection>}
- */
-export async function fetchTimestepRisk(stormId, stepIndex) {
-  return request(`/api/storms/${encodeURIComponent(stormId)}/timesteps/${stepIndex}/risk`);
+export async function fetchStormRisk(stormId, stepIndex = 0) {
+  return request(`/api/storms/${encodeURIComponent(stormId)}/risk?step_index=${stepIndex}`);
 }
 
-/**
- * Fetch Gemini-generated district advisory text and mocked dispatches for a timestep.
- * @param {string} stormId
- * @param {number} stepIndex
- * @returns {Promise<Object>}
- */
-export async function fetchTimestepAdvisory(stormId, stepIndex) {
-  return request(`/api/storms/${encodeURIComponent(stormId)}/timesteps/${stepIndex}/advisory`);
+export async function fetchStormAdvisory(stormId, stepIndex = 0) {
+  return request(`/api/storms/${encodeURIComponent(stormId)}/advisory?step_index=${stepIndex}`);
+}
+
+// ── Critical Infrastructure Lifelines ──
+
+export async function fetchInfrastructure(category = null, district = null) {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (district) params.append('district', district);
+  const q = params.toString() ? `?${params.toString()}` : '';
+  return request(`/api/infrastructure${q}`);
+}
+
+export async function fetchInfrastructureDetail(assetId) {
+  return request(`/api/infrastructure/${encodeURIComponent(assetId)}`);
+}
+
+// ── Scenario Simulator ──
+
+export async function runScenarioSimulation(params) {
+  return request('/api/simulation/run', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+// ── Automated Operational Reports ──
+
+export async function fetchSituationReport() {
+  return request('/api/reports/situation');
 }

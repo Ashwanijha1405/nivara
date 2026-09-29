@@ -1,40 +1,37 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Base surfaces */
-  --bg-void: #050810;
-  --bg-base: #0a0f1a;
-  --bg-surface: #111827;
-  --bg-elevated: #1a2236;
-  --bg-inset: #070b14;
+  /* Surface hierarchy */
+  --bg-void: #030712;
+  --bg-canvas: #070c18;
+  --bg-panel: #0b111e;
+  --bg-card: #111827;
+  --bg-subtle: #151e2e;
+  --bg-highlight: #1e293b;
 
-  /* Borders */
+  /* Restrained borders */
   --border-subtle: #1e293b;
   --border-muted: #162032;
 
-  /* Text */
-  --text-primary: #e5e7eb;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
-  --text-dim: #4b5563;
+  /* Typography */
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
 
-  /* Risk status — the ONLY use of color */
+  /* Authoritative Risk Color System */
   --risk-critical: #dc2626;
-  --risk-critical-muted: #991b1b;
-  --risk-high: #d97706;
-  --risk-high-muted: #92400e;
-  --risk-medium: #ca8a04;
-  --risk-medium-muted: #854d0e;
+  --risk-high: #ea580c;
+  --risk-moderate: #ca8a04;
   --risk-low: #16a34a;
-  --risk-low-muted: #166534;
 
-  /* Functional accents (very sparing) */
-  --accent-info: #3b82f6;
-  --accent-track: #475569;
+  /* Professional Operational Accents */
+  --accent-blue: #0284c7;
+  --accent-cyan: #0284c7;
 
-  /* Fonts */
+  /* Font Families */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'SF Mono', monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
 
   font-family: var(--font-sans);
   color-scheme: dark;
@@ -55,7 +52,6 @@ html, body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
@@ -63,121 +59,71 @@ html, body {
   width: 100%;
 }
 
-/* Scrollbar styling */
+/* Custom minimal scrollbar */
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: #1e293b;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
 
-/* Dashboard grid */
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: 340px 1fr 360px;
-  grid-template-rows: 48px 1fr 68px;
+/* Application Container */
+.app-container {
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
-  gap: 0;
   overflow: hidden;
 }
 
-.dashboard-header {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  background: var(--bg-base);
+/* Operational Top Bar */
+.app-topbar {
+  height: 52px;
+  background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border-subtle);
-  z-index: 30;
-}
-
-.dashboard-left {
-  grid-column: 1;
-  grid-row: 2;
-  background: var(--bg-base);
-  border-right: 1px solid var(--border-subtle);
-  overflow-y: auto;
-  overflow-x: hidden;
-  z-index: 20;
-}
-
-.dashboard-map {
-  grid-column: 2;
-  grid-row: 2;
-  position: relative;
-  overflow: hidden;
-  z-index: 1;
-}
-
-.dashboard-right {
-  grid-column: 3;
-  grid-row: 2;
-  background: var(--bg-base);
-  border-left: 1px solid var(--border-subtle);
-  overflow-y: auto;
-  overflow-x: hidden;
-  z-index: 20;
-}
-
-.dashboard-timeline {
-  grid-column: 1 / -1;
-  grid-row: 3;
-  background: var(--bg-base);
-  border-top: 1px solid var(--border-subtle);
-  z-index: 30;
-}
-
-/* Panel sections */
-.panel-section {
-  padding: 16px 18px;
-  border-bottom: 1px solid var(--border-muted);
-}
-
-.panel-section:last-child {
-  border-bottom: none;
-}
-
-.section-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  color: var(--text-muted);
-  margin-bottom: 10px;
-}
-
-/* Monospace data values */
-.mono {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Risk level chips */
-.risk-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  padding: 2px 7px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  line-height: 1;
+  justify-content: space-between;
+  padding: 0 20px;
+  flex-shrink: 0;
+  z-index: 50;
 }
 
-.risk-chip--critical { background: var(--risk-critical-muted); color: #fca5a5; }
-.risk-chip--high { background: var(--risk-high-muted); color: #fcd34d; }
-.risk-chip--medium { background: var(--risk-medium-muted); color: #fde68a; }
-.risk-chip--low { background: var(--risk-low-muted); color: #86efac; }
+/* Navigation Tabs */
+.nav-tab-btn {
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
 
-/* Timeline slider override */
+.nav-tab-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-subtle);
+}
+
+.nav-tab-btn.active {
+  color: #38bdf8;
+  background-color: var(--bg-subtle);
+  border-color: #0284c7;
+}
+
+/* Range input */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -195,33 +141,7 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--text-primary);
-  border: 2px solid var(--bg-base);
+  background: #f1f5f9;
+  border: 2px solid var(--bg-panel);
   cursor: pointer;
-  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
-}
-
-input[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--text-primary);
-  border: 2px solid var(--bg-base);
-  cursor: pointer;
-}
-
-/* Subtle MapLibre popup override */
-.maplibregl-popup-content {
-  background: #111827 !important;
-  border: 1px solid #1e293b !important;
-  border-radius: 4px !important;
-  padding: 10px 12px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
-  color: #e5e7eb !important;
-  font-family: var(--font-mono) !important;
-  font-size: 11px !important;
-}
-
-.maplibregl-popup-tip {
-  border-top-color: #111827 !important;
 }

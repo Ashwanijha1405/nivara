@@ -32,6 +32,7 @@ venv/
 .venv/
 env/
 ENV/
+*.db
 
 # Node / Frontend
 node_modules/
