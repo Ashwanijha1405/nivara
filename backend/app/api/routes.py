@@ -38,7 +38,11 @@ router = APIRouter(prefix="/api", tags=["disaster-intelligence"])
 settings = get_settings()
 
 # Initialize Domain Adapters
-gdacs_adapter = GDACSAdapter()
+gdacs_adapter = GDACSAdapter(
+    base_url=settings.gdacs_base_url,
+    timeout_seconds=settings.gdacs_timeout_seconds,
+    cache_ttl_seconds=settings.gdacs_cache_ttl_seconds,
+)
 imd_adapter = IMDAdapter(base_url=settings.imd_bulletin_url)
 ibtracs_adapter = IBTrACSAdapter(data_dir=settings.data_dir)
 open_meteo_adapter = OpenMeteoAdapter(base_url=settings.open_meteo_base_url)

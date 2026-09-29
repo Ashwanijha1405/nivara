@@ -11,7 +11,7 @@ Verifies:
 import pytest
 from fastapi.testclient import TestClient
 
-from app.data_sources.gdacs.gdacs_adapter import GDACSAdapter
+from app.data_sources.gdacs.gdacs_adapter import GDACSAdapter, calculate_bearing
 from app.domain.cyclone import LiveCycloneInfo, LiveCycloneStatusResponse
 from app.main import app
 
@@ -168,3 +168,203 @@ def test_scenario_simulator_remains_intact():
     assert "simulated_track" in data
     assert "hazard_footprint_polygon" in data
     assert "evaluated_assets" in data
+
+
+def test_calculate_bearing():
+    """Verify forward azimuth calculation and edge cases."""
+    # North
+    assert calculate_bearing(20.0, 85.0, 21.0, 85.0) == 0.0
+    # East along equator (great circle coincides with equator)
+    assert calculate_bearing(0.0, 85.0, 0.0, 86.0) == 90.0
+    # East at 20N (initial great circle azimuth is ~89.8 deg)
+    assert pytest.approx(calculate_bearing(20.0, 85.0, 20.0, 86.0), abs=0.5) == 90.0
+    # South
+    assert calculate_bearing(20.0, 85.0, 19.0, 85.0) == 180.0
+    # West along equator
+    assert calculate_bearing(0.0, 85.0, 0.0, 84.0) == 270.0
+    # Identical coordinates must return None (strictly no synthetic heading)
+    assert calculate_bearing(20.0, 85.0, 20.0, 85.0) is None
+
+
+@pytest.mark.anyio
+async def test_gdacs_active_nio_event_processing(monkeypatch):
+    """Verify detailed parsing, classification, and anti-fabrication for an active NIO storm."""
+    adapter = GDACSAdapter()
+
+    mock_search_features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [88.5, 18.2]},
+            "properties": {
+                "eventtype": "TC",
+                "eventid": 999999,
+                "episodeid": 1,
+                "eventname": "TEST_STORM",
+                "iscurrent": "true",
+                "alertlevel": "Orange",
+                "alertscore": 2.5,
+                "fromdate": "2026-09-29T00:00:00",
+                "datemodified": "2026-09-29T12:00:00",
+                "iso3": "IND",
+                "affectedcountries": [{"countryname": "India", "iso3": "IND"}],
+                "severitydata": {
+                    "severity": 120.0,
+                    "severitytext": "Severe Cyclonic Storm (120 km/h)",
+                },
+                # Notice: central pressure NOT provided by GDACS
+            },
+        }
+    ]
+
+    mock_geometry_payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[87.0, 16.0], [88.0, 17.5]],
+                },
+                "properties": {"forecast": False, "Class": "Line_Line_0"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[88.0, 17.5], [89.0, 19.0]],
+                },
+                "properties": {"forecast": True, "Class": "Line_Line_1"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[86.0, 15.0], [90.0, 15.0], [90.0, 20.0], [86.0, 20.0], [86.0, 15.0]]],
+                },
+                "properties": {"Class": "Poly_Cones", "polygonlabel": "Uncertainty Cones"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[87.5, 17.0], [89.5, 17.0], [89.5, 19.0], [87.5, 19.0], [87.5, 17.0]]],
+                },
+                "properties": {"Class": "Poly_Red", "polygonlabel": "120 km/h"},
+            },
+        ],
+    }
+
+    async def mock_fetch_active():
+        return mock_search_features
+
+    async def mock_fetch_geo(event_id, episode_id):
+        return mock_geometry_payload
+
+    monkeypatch.setattr(adapter, "fetch_active_tropical_cyclones", mock_fetch_active)
+    monkeypatch.setattr(adapter, "fetch_detailed_geometry", mock_fetch_geo)
+
+    status = await adapter.get_live_cyclone_status()
+    assert status.live_status == "ACTIVE"
+    assert status.active_cyclone is True
+    assert status.cyclone is not None
+    assert status.cyclone.storm_name == "TEST_STORM"
+    assert status.cyclone.current_lat == 18.2
+    assert status.cyclone.current_lon == 88.5
+    assert status.cyclone.wind_speed_kmh == 120.0
+    assert status.cyclone.wind_speed_kts == round(120.0 / 1.852, 1)
+
+    # Anti-fabrication check: central_pressure_mb must be null when GDACS does not provide it
+    assert status.cyclone.central_pressure_mb is None
+
+    # Heading safely derived from observed track coordinates: from (16.0, 87.0) to (17.5, 88.0)
+    assert status.cyclone.heading_deg is not None
+    assert 20.0 < status.cyclone.heading_deg < 40.0  # Approx North-East
+
+    # GeoJSON track features
+    track_geojson = await adapter.get_live_track_geojson()
+    assert track_geojson["type"] == "FeatureCollection"
+    assert track_geojson["properties"]["status"] == "ACTIVE"
+    assert len(track_geojson["features"]) == 5  # 1 storm center Point + 2 LineStrings + 2 Polygons
+
+    # Check feature classification
+    types = [f["properties"].get("feature_type") for f in track_geojson["features"]]
+    assert "storm_center" in types
+    assert "observed_track" in types
+    assert "forecast_track" in types
+    assert "uncertainty_cone" in types
+    assert "wind_hazard_polygon" in types
+
+
+@pytest.mark.anyio
+async def test_global_active_cyclone_outside_nio_is_ignored(monkeypatch):
+    """Verify that an active hurricane in Mexico/Pacific is rejected and basin reports CALM."""
+    adapter = GDACSAdapter()
+
+    mexico_feature = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [-110.9, 27.8]},
+            "properties": {
+                "eventtype": "TC",
+                "eventid": 1001325,
+                "episodeid": 36,
+                "eventname": "POLO-26",
+                "iscurrent": "true",
+                "iso3": "MEX",
+                "country": "Mexico",
+                "affectedcountries": [{"countryname": "Mexico", "iso3": "MEX"}],
+            },
+        }
+    ]
+
+    async def mock_fetch_active():
+        return mexico_feature
+
+    monkeypatch.setattr(adapter, "fetch_active_tropical_cyclones", mock_fetch_active)
+
+    status = await adapter.get_live_cyclone_status()
+    assert status.live_status == "CALM"
+    assert status.active_cyclone is False
+    assert status.cyclone is None
+    assert "No active tropical cyclone detected in North Indian Ocean basin" in status.message
+
+
+@pytest.mark.anyio
+async def test_caching_and_last_sync_retention(monkeypatch):
+    """Verify in-memory caching and retention of last successful sync time on error."""
+    adapter = GDACSAdapter(cache_ttl_seconds=120)
+
+    call_count = 0
+
+    async def mock_fetch_active():
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    monkeypatch.setattr(adapter, "fetch_active_tropical_cyclones", mock_fetch_active)
+
+    # First call: makes HTTP request
+    status1 = await adapter.get_live_cyclone_status()
+    assert call_count == 1
+    assert status1.live_status == "CALM"
+    last_sync = status1.last_successful_sync
+    assert last_sync is not None
+
+    # Second immediate call: served from in-memory cache, call_count remains 1
+    status2 = await adapter.get_live_cyclone_status()
+    assert call_count == 1
+    assert status2 is status1
+
+    # Simulate network failure on expired cache
+    adapter._last_fetch_utc = None  # Force cache invalidation
+
+    async def mock_fetch_fail():
+        raise TimeoutError("Simulated network timeout")
+
+    monkeypatch.setattr(adapter, "fetch_active_tropical_cyclones", mock_fetch_fail)
+
+    status_fail = await adapter.get_live_cyclone_status()
+    assert status_fail.live_status == "UNAVAILABLE"
+    assert status_fail.active_cyclone is None
+    # Verify retention of last_successful_sync
+    assert status_fail.last_successful_sync == last_sync

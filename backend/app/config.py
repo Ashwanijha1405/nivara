@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     overpass_api_url: str = "https://overpass-api.de/api/interpreter"
     imd_bulletin_url: str = "https://mausam.imd.gov.in"
     ibtracs_base_url: str = "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv"
+    gdacs_base_url: str = "https://www.gdacs.org/gdacsapi/api"
+    gdacs_timeout_seconds: float = 4.0
+    gdacs_cache_ttl_seconds: int = 90
 
     model_config = SettingsConfigDict(
         env_file=".env",

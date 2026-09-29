@@ -31,6 +31,7 @@ class SourceProvider(str, Enum):
     OSM = "OpenStreetMap"
     NIVARA_RISK_ENGINE = "Nivara Risk Engine"
     GEMINI_LLM = "Google Gemini 3.7 Flash"
+    GDACS = "GDACS (UN OCHA / EC JRC)"
 
 
 class DataSourceMeta(BaseModel):
