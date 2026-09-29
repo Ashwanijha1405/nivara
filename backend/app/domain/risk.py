@@ -19,6 +19,11 @@ class HazardComponent(BaseModel):
     wind_gusts_kph: float = 0.0
     wind_hazard_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Normalized wind hazard [0, 1]")
     storm_surge_risk_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Surge inundation hazard [0, 1]")
+    surge_height_m: float = Field(default=0.0, description="Hydrodynamic coastal storm surge water level in meters")
+    inundation_depth_m: float = Field(default=0.0, description="Net surface water inundation depth (surge - elevation) in meters")
+    rainfall_rate_mmh: float = Field(default=0.0, description="Estimated localized rainfall intensity in mm/hour")
+    rainfall_accum_24h_mm: float = Field(default=0.0, description="Projected 24-hour rainfall accumulation in mm")
+    pluvial_flood_depth_m: float = Field(default=0.0, description="Pluvial drainage depression water depth in meters")
     cyclone_proximity_km: float
     storm_center_wind_knots: Optional[float] = None
     hazard_status: Literal["AVAILABLE", "OUT_OF_RANGE", "UNAVAILABLE"] = "AVAILABLE"
@@ -40,7 +45,7 @@ class VulnerabilityComponent(BaseModel):
     terrain_elevation_m: float
     elevation_vulnerability_score: float = Field(..., ge=0.0, le=1.0, description="High when near sea level")
     asset_criticality_score: float = Field(..., ge=0.0, le=1.0, description="Healthcare/Grid vs Secondary")
-    land_cover_multiplier: float = Field(..., ge=0.0, le=1.0)
+    land_cover_multiplier: float = Field(default=0.8, ge=0.0, le=1.2)
 
 
 class ImpactConsequence(BaseModel):
@@ -77,6 +82,12 @@ class ModelledRiskResult(BaseModel):
     provenance: DataSourceMeta
     district: str = ""
     state: str = ""
+    access_status: str = "PASSABLE"  # "PASSABLE", "VULNERABLE", "IMPASSABLE"
+    isolation_risk: str = "LOW"      # "LOW", "MODERATE", "HIGH"
+    surge_height_m: float = 0.0
+    inundation_depth_m: float = 0.0
+    rainfall_accum_24h_mm: float = 0.0
+    pluvial_flood_depth_m: float = 0.0
 
     # Backwards compatibility aliases
     asset_id: str = ""

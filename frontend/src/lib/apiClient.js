@@ -56,6 +56,15 @@ export async function fetchLiveCycloneRisk() {
   return request('/api/storms/live/risk');
 }
 
+export async function fetchLiveForecastRisk() {
+  return request('/api/storms/live/forecast-risk');
+}
+
+export async function fetchLiveAdvisory(district) {
+  const query = district ? `?district=${encodeURIComponent(district)}` : '';
+  return request(`/api/storms/live/advisory${query}`);
+}
+
 export async function fetchSystemStatus() {
   return request('/api/system/status');
 }
@@ -125,6 +134,8 @@ export function normalizeRiskItem(item) {
     hazard: item.hazard || {},
     exposure: item.exposure || {},
     vulnerability: item.vulnerability || {},
+    access_status: item.access_status || 'PASSABLE',
+    isolation_risk: item.isolation_risk || 'LOW',
     asset_id: id,
     asset_name: name,
   };
@@ -256,4 +267,67 @@ export async function runScenarioSimulation(params) {
 
 export async function fetchSituationReport() {
   return request('/api/reports/situation');
+}
+
+// ── Google Earth Engine (GEE) Satellite Feeds (Phase 5) ──
+
+export async function fetchGeeStatus() {
+  return request('/api/satellite/gee/status');
+}
+
+export async function fetchGeeLayers() {
+  return request('/api/satellite/gee/layers');
+}
+
+export async function fetchSarFloodExtent() {
+  return request('/api/satellite/sar-flood');
+}
+
+export async function fetchPointLandCover(lat, lon) {
+  return request(`/api/satellite/land-cover?lat=${lat}&lon=${lon}`);
+}
+
+// ── Automated Advisory Dispatch Engine (Phase 6) ──
+
+export async function fetchAdvisoryRecipients() {
+  return request('/api/advisory/recipients');
+}
+
+export function getCapAlertXmlUrl() {
+  return `${API_BASE_URL}/api/advisory/cap.xml`;
+}
+
+export async function dispatchAdvisory(payload) {
+  return request('/api/advisory/dispatch', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchDispatchLog() {
+  return request('/api/advisory/dispatch/log');
+}
+
+// ── Gemini 3.7 Multimodal & Parametric Liquidity (Phase 7) ──
+
+export async function analyzeMultimodalSatellite(payload) {
+  return request('/api/advisory/multimodal-analyze', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchParametricPolicies() {
+  return request('/api/parametric/policies');
+}
+
+export async function evaluateParametricPayout(payload) {
+  return request('/api/parametric/evaluate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchPayoutCertificates() {
+  return request('/api/parametric/certificates');
 }

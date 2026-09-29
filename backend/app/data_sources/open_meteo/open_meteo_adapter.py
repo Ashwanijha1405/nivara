@@ -129,3 +129,22 @@ class OpenMeteoAdapter:
                     results[u_idx] = 5.0
 
         return results
+
+    async def get_hourly_precipitation_forecast(self, lat: float, lon: float, hours: int = 24) -> List[float]:
+        """Fetch authentic hourly precipitation forecast (mm) from Open-Meteo for the next N hours."""
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "precipitation",
+            "forecast_days": 2,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(f"{self.base_url}/forecast", params=params)
+                if res.status_code == 200:
+                    hourly = res.json().get("hourly", {})
+                    precip_list = hourly.get("precipitation", [])
+                    return [float(p) for p in precip_list[:hours]]
+        except Exception:
+            pass
+        return [0.0] * hours

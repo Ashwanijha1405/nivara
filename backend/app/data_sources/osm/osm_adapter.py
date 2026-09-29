@@ -35,7 +35,7 @@ class OSMAdapter:
         self.spatial_cache = SpatialCache(self.data_dir / "spatial_cache.db")
 
     def build_query(self, min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> str:
-        """Construct Overpass QL query covering healthcare, energy, shelters, and transport."""
+        """Construct Overpass QL query covering healthcare, energy, shelters, arterial roads, and bridges."""
         bbox = f"{min_lat},{min_lon},{max_lat},{max_lon}"
         return f"""[out:json][timeout:25];
 (
@@ -45,8 +45,10 @@ class OSMAdapter:
   node["power"="plant"]({bbox});
   node["amenity"="shelter"]({bbox});
   node["aeroway"="aerodrome"]({bbox});
+  way["highway"~"motorway|trunk|primary|secondary"]({bbox});
+  way["bridge"="yes"]({bbox});
 );
-out body 60;"""
+out body center 120;"""
 
     async def fetch_infrastructure(
         self,
@@ -91,12 +93,28 @@ out body 60;"""
                         coords: List[tuple[float, float]] = []
 
                         for el in elements:
+                            el_type = el.get("type", "node")
                             tags = el.get("tags", {})
+
+                            if el_type == "way":
+                                center = el.get("center", {})
+                                lat = float(center.get("lat", 0.0))
+                                lon = float(center.get("lon", 0.0))
+                                id_prefix = "osm_way"
+                            else:
+                                lat = float(el.get("lat", 0.0))
+                                lon = float(el.get("lon", 0.0))
+                                id_prefix = "osm_node"
+
+                            if lat == 0.0 and lon == 0.0:
+                                continue
+
                             name = (
                                 tags.get("name")
                                 or tags.get("name:en")
+                                or tags.get("ref")
                                 or tags.get("operator")
-                                or f"OSM Node #{el['id']}"
+                                or f"OSM {'Way' if el_type == 'way' else 'Node'} #{el['id']}"
                             )
 
                             if "hospital" in tags.get("amenity", ""):
@@ -109,11 +127,12 @@ out body 60;"""
                                 cat = AssetCategory.SHELTER
                             elif tags.get("aeroway") == "aerodrome":
                                 cat = AssetCategory.AIRPORT
+                            elif tags.get("bridge") == "yes":
+                                cat = AssetCategory.BRIDGE
+                            elif "highway" in tags:
+                                cat = AssetCategory.ROAD
                             else:
                                 cat = AssetCategory.EMERGENCY
-
-                            lat = float(el.get("lat", 0.0))
-                            lon = float(el.get("lon", 0.0))
 
                             district = tags.get("addr:district") or tags.get("is_in:district") or "Coastal Sector"
                             state = tags.get("addr:state") or "West Bengal"
@@ -123,7 +142,7 @@ out body 60;"""
 
                             parsed.append(
                                 InfrastructureAsset(
-                                    id=f"osm_node_{el['id']}",
+                                    id=f"{id_prefix}_{el['id']}",
                                     name=name,
                                     category=cat,
                                     lat=lat,

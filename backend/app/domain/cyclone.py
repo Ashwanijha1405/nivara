@@ -103,3 +103,38 @@ class LiveCycloneStatusResponse(BaseModel):
     last_successful_sync: Optional[str] = None
     message: str
 
+
+class ForecastTimestepRisk(BaseModel):
+    """Predictive infrastructure impact at a future forecast waypoint."""
+
+    step_index: int
+    forecast_label: str  # "+0h (Current)", "+6h", "+12h", "Landfall"
+    lat: float
+    lon: float
+    wind_speed_knots: float
+    wind_speed_kmh: float
+    max_risk_score: float
+    critical_facilities_count: int
+    impassable_roads_count: int = 0
+    peak_surge_m: float = 0.0
+    max_rainfall_24h_mm: float = 0.0
+    top_exposed_district: str
+    evaluated_assets: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class LiveForecastRiskResponse(BaseModel):
+    """Normalized response for time-stepped predictive forecast risk."""
+
+    live_status: str  # "ACTIVE", "CALM", "UNAVAILABLE"
+    storm_name: Optional[str] = None
+    event_id: Optional[str] = None
+    forward_speed_kmh: Optional[float] = None
+    approach_heading_deg: Optional[float] = None
+    landfall_eta_hours: Optional[float] = None
+    projected_landfall_district: Optional[str] = None
+    total_forecast_steps: int = 0
+    forecast_timesteps: List[ForecastTimestepRisk] = Field(default_factory=list)
+    provenance: Optional[DataSourceMeta] = None
+    message: Optional[str] = None
+
+

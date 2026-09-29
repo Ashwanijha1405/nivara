@@ -153,44 +153,64 @@ export function buildSimulatedTrackGeoJson(simulatedTrack) {
 }
 
 /**
- * Builds GeoJSON FeatureCollection for simulated hazard / surge footprint polygon.
+ * Builds GeoJSON FeatureCollection for simulated hazard / surge footprint polygon and depth zones.
  */
-export function buildSimulatedHazardPolygonGeoJson(polygonCoords) {
-  if (!Array.isArray(polygonCoords) || polygonCoords.length < 3) {
-    return { type: 'FeatureCollection', features: [] };
+export function buildSimulatedHazardPolygonGeoJson(polygonCoords, depthZones = []) {
+  const features = [];
+
+  // Multi-band surge depth zones if available
+  if (Array.isArray(depthZones) && depthZones.length > 0) {
+    for (const zone of depthZones) {
+      const ring = zone.polygon;
+      if (Array.isArray(ring) && ring.length >= 3) {
+        const valid = ring.filter(
+          (pt) => Array.isArray(pt) && pt.length >= 2 && isValidCoordinate(pt[0], pt[1])
+        );
+        if (valid.length >= 3) {
+          const first = valid[0];
+          const last = valid[valid.length - 1];
+          if (first[0] !== last[0] || first[1] !== last[1]) {
+            valid.push([first[0], first[1]]);
+          }
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'Polygon', coordinates: [valid] },
+            properties: {
+              feature_type: 'surge_depth_zone',
+              title: zone.zone_label,
+              depth_range_m: zone.depth_range_m,
+              fill_color: zone.fill_color || '#ea580c',
+            },
+          });
+        }
+      }
+    }
   }
 
-  const validRing = polygonCoords.filter(
-    (pt) => Array.isArray(pt) && pt.length >= 2 && isValidCoordinate(pt[0], pt[1])
-  );
-
-  if (validRing.length < 3) {
-    return { type: 'FeatureCollection', features: [] };
-  }
-
-  // Ensure ring is closed
-  const first = validRing[0];
-  const last = validRing[validRing.length - 1];
-  if (first[0] !== last[0] || first[1] !== last[1]) {
-    validRing.push([first[0], first[1]]);
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features: [
-      {
+  // Fallback / outer footprint polygon
+  if (features.length === 0 && Array.isArray(polygonCoords) && polygonCoords.length >= 3) {
+    const validRing = polygonCoords.filter(
+      (pt) => Array.isArray(pt) && pt.length >= 2 && isValidCoordinate(pt[0], pt[1])
+    );
+    if (validRing.length >= 3) {
+      const first = validRing[0];
+      const last = validRing[validRing.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) {
+        validRing.push([first[0], first[1]]);
+      }
+      features.push({
         type: 'Feature',
-        geometry: {
-          type: 'Polygon',
-          coordinates: [validRing],
-        },
+        geometry: { type: 'Polygon', coordinates: [validRing] },
         properties: {
           feature_type: 'hazard_footprint_polygon',
           title: 'Simulated Hazard & Surge Footprint',
+          fill_color: '#ea580c',
         },
-      },
-    ],
-  };
+      });
+    }
+  }
+
+  return { type: 'FeatureCollection', features };
 }
 
 export default function OpenSource3DMap({
@@ -297,7 +317,10 @@ export default function OpenSource3DMap({
     }
 
     const trackFc = buildSimulatedTrackGeoJson(simulationData.simulated_track);
-    const hazardFc = buildSimulatedHazardPolygonGeoJson(simulationData.hazard_footprint_polygon);
+    const hazardFc = buildSimulatedHazardPolygonGeoJson(
+      simulationData.hazard_footprint_polygon,
+      simulationData.surge_depth_zones
+    );
 
     trackSource?.setData(trackFc);
     hazardSource?.setData(hazardFc);
@@ -584,17 +607,20 @@ export default function OpenSource3DMap({
       // ── 1c. Simulation Footprint & Track Sources & Layers ──
       map.addSource('simulation-hazard', {
         type: 'geojson',
-        data: buildSimulatedHazardPolygonGeoJson(simulationData?.hazard_footprint_polygon),
+        data: buildSimulatedHazardPolygonGeoJson(
+          simulationData?.hazard_footprint_polygon,
+          simulationData?.surge_depth_zones
+        ),
       });
 
-      // Simulation Hazard Fill (semi-transparent amber/orange surge footprint)
+      // Simulation Hazard Fill (supports multi-band depth coloring or fallback amber)
       map.addLayer({
         id: 'simulation-hazard-fill',
         type: 'fill',
         source: 'simulation-hazard',
         paint: {
-          'fill-color': '#ea580c',
-          'fill-opacity': 0.22,
+          'fill-color': ['coalesce', ['get', 'fill_color'], '#ea580c'],
+          'fill-opacity': ['coalesce', ['get', 'fill_opacity'], 0.25],
         },
       });
 
@@ -604,8 +630,8 @@ export default function OpenSource3DMap({
         type: 'line',
         source: 'simulation-hazard',
         paint: {
-          'line-color': '#f97316',
-          'line-width': 2.5,
+          'line-color': ['coalesce', ['get', 'stroke_color'], '#f97316'],
+          'line-width': 2.0,
           'line-dasharray': [3, 2],
           'line-opacity': 0.85,
         },
@@ -713,7 +739,11 @@ export default function OpenSource3DMap({
             '#f59e0b',
             ['==', ['get', 'category'], 'shelter'],
             '#10b981',
+            ['==', ['get', 'category'], 'bridge'],
+            '#a855f7',
+            ['==', ['get', 'category'], 'road'],
             '#38bdf8',
+            '#06b6d4',
           ],
           'circle-stroke-width': 1.5,
           'circle-stroke-color': '#0b111e',
@@ -738,6 +768,21 @@ export default function OpenSource3DMap({
                 <span style="color:#38bdf8">${p.elevation_m}m ASL</span>
                 <span style="color:#f59e0b">${p.dist_to_coast_km}km shore</span>
               </div>
+              ${p.inundation_depth_m > 0 ? `
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155;font-size:10px">
+                <span style="color:#38bdf8">Surge Inundation:</span>
+                <span style="font-weight:700;color:${p.inundation_depth_m >= 1.5 ? '#ef4444' : '#f59e0b'}">${Number(p.inundation_depth_m).toFixed(2)}m</span>
+              </div>` : ''}
+              ${p.rainfall_accum_24h_mm > 0 ? `
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;font-size:10px">
+                <span style="color:#94a3b8">24h Rainfall:</span>
+                <span style="font-weight:600;color:#60a5fa">${Number(p.rainfall_accum_24h_mm).toFixed(0)} mm</span>
+              </div>` : ''}
+              ${p.access_status ? `
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;padding-top:4px;border-top:1px solid #334155;font-size:10px">
+                <span style="color:#94a3b8">Access:</span>
+                <span style="font-weight:700;color:${p.access_status === 'IMPASSABLE' ? '#ef4444' : p.access_status === 'VULNERABLE' ? '#f59e0b' : '#10b981'}">${p.access_status}</span>
+              </div>` : ''}
             </div>
           `)
           .addTo(map);
@@ -976,8 +1021,16 @@ export default function OpenSource3DMap({
               <span>Simulated Path</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(234, 88, 12, 0.3)', border: '1.5px dashed #f97316', display: 'inline-block' }} />
-              <span>Surge / Hazard Zone</span>
+              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(239, 68, 68, 0.45)', border: '1px solid #ef4444', display: 'inline-block' }} />
+              <span>Surge &gt;3.0m</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(249, 115, 22, 0.35)', border: '1px solid #f97316', display: 'inline-block' }} />
+              <span>Surge 1.5–3.0m</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 10, height: 10, backgroundColor: 'rgba(6, 182, 212, 0.25)', border: '1px solid #06b6d4', display: 'inline-block' }} />
+              <span>Surge &lt;1.5m</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: '#ef4444', border: '2px solid #ffffff', display: 'inline-block' }} />
@@ -1005,6 +1058,14 @@ export default function OpenSource3DMap({
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#10b981' }} />
               <span>Shelters</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#a855f7' }} />
+              <span>Bridges</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#38bdf8' }} />
+              <span>Arterial Roads</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ width: 14, height: 2, backgroundColor: '#f8fafc' }} />

@@ -7,7 +7,7 @@ Strictly tagged as:
 
 from datetime import datetime, timezone
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from app.domain.cyclone import CycloneTrack, CycloneWaypoint
@@ -48,6 +48,10 @@ class ScenarioSimulationResult(BaseModel):
     parameters: ScenarioSimulationParameters
     simulated_track: List[CycloneWaypoint]
     hazard_footprint_polygon: List[List[float]]
+    surge_depth_zones: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Multi-band coastal surge inundation depth polygons (<1.5m, 1.5-3m, >3m)"
+    )
     evaluated_assets: List[ModelledRiskResult]
     summary: ScenarioImpactSummary
     disclaimer: str = Field(
@@ -128,6 +132,7 @@ class SimulationEngineService:
                 cyclone_lon=landfall_pt.lon,
                 cyclone_wind_knots=landfall_pt.wind_speed_knots,
                 data_mode=DataMode.SCENARIO,
+                central_pressure_mb=params.central_pressure_mb,
             )
             evaluated.append(res)
 
@@ -140,16 +145,13 @@ class SimulationEngineService:
         worst_district = evaluated[0].district if evaluated else "Coastal Corridor"
         max_risk = evaluated[0].modelled_risk_score if evaluated else 0.0
 
-        # Construct approximate 100km hazard polygon around landfall
-        r_deg = 1.0
-        c_lat, c_lon = params.landfall_lat, params.landfall_lon
-        hazard_poly = [
-            [round(c_lon - r_deg, 3), round(c_lat - r_deg, 3)],
-            [round(c_lon + r_deg, 3), round(c_lat - r_deg, 3)],
-            [round(c_lon + r_deg, 3), round(c_lat + r_deg, 3)],
-            [round(c_lon - r_deg, 3), round(c_lat + r_deg, 3)],
-            [round(c_lon - r_deg, 3), round(c_lat - r_deg, 3)],
-        ]
+        # Construct realistic hydrodynamic coastal surge footprint and depth zones
+        hazard_poly, surge_depth_zones = self.generate_surge_depth_polygons(
+            landfall_lat=params.landfall_lat,
+            landfall_lon=params.landfall_lon,
+            surge_height_m=params.surge_height_meters,
+            heading_deg=params.track_heading_deg,
+        )
 
         summary = ScenarioImpactSummary(
             total_assets_at_risk=len(evaluated),
@@ -165,6 +167,7 @@ class SimulationEngineService:
             parameters=params,
             simulated_track=waypoints,
             hazard_footprint_polygon=hazard_poly,
+            surge_depth_zones=surge_depth_zones,
             evaluated_assets=evaluated,
             summary=summary,
             disclaimer="SCENARIO / MODELLED — NOT AN OFFICIAL FORECAST. FOR PREPAREDNESS SIMULATION ONLY.",
@@ -178,3 +181,80 @@ class SimulationEngineService:
                 attribution="Hypothetical scenario based on user parameters. Not affiliated with official IMD forecasts.",
             ),
         )
+
+    @staticmethod
+    def generate_surge_depth_polygons(
+        landfall_lat: float,
+        landfall_lon: float,
+        surge_height_m: float,
+        heading_deg: float,
+    ) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
+        """Generate realistic hydrodynamic surge inundation polygons and depth zones.
+
+        Accounts for onshore wind direction (right-of-track maximum in NIO) and inland penetration.
+        Returns (outer_footprint_polygon, list_of_depth_zones).
+        """
+        heading_rad = math.radians(heading_deg)
+        onshore_angle = heading_rad + math.pi / 2.0
+
+        zones: List[Dict[str, Any]] = []
+        band_specs = [
+            {"threshold": 3.0, "label": "> 3.0m (Extreme Surge)", "range": "3.0m+", "color": "#ef4444", "scale": 0.45},
+            {"threshold": 1.5, "label": "1.5m - 3.0m (Severe Inundation)", "range": "1.5 - 3.0m", "color": "#f97316", "scale": 0.75},
+            {"threshold": 0.0, "label": "< 1.5m (Peripheral Surge / Runoff)", "range": "0.3 - 1.5m", "color": "#06b6d4", "scale": 1.0},
+        ]
+
+        outer_polygon: List[List[float]] = []
+
+        for spec in band_specs:
+            if surge_height_m >= spec["threshold"]:
+                scale = spec["scale"]
+                inland_km = min(35.0, surge_height_m * 6.5) * scale
+                alongshore_km = (45.0 + surge_height_m * 8.0) * scale
+
+                inland_deg = inland_km / 111.0
+                alongshore_deg = alongshore_km / 105.0
+
+                pts: List[List[float]] = []
+                steps = 8
+                # Front sea approach arc
+                for i in range(steps + 1):
+                    t = (i / steps) - 0.5
+                    t_bias = t + 0.15
+                    lat_pt = landfall_lat + t_bias * alongshore_deg * math.cos(heading_rad)
+                    lon_pt = landfall_lon + t_bias * alongshore_deg * math.sin(heading_rad)
+                    pts.append([round(lon_pt, 4), round(lat_pt, 4)])
+
+                # Inland penetration arc
+                for i in range(steps + 1):
+                    t = 0.5 - (i / steps)
+                    t_bias = t + 0.15
+                    penetration = max(0.0, (1.0 - (2.0 * t) ** 2)) * inland_deg
+                    lat_pt = landfall_lat + t_bias * alongshore_deg * math.cos(heading_rad) + penetration * math.cos(onshore_angle)
+                    lon_pt = landfall_lon + t_bias * alongshore_deg * math.sin(heading_rad) + penetration * math.sin(onshore_angle)
+                    pts.append([round(lon_pt, 4), round(lat_pt, 4)])
+
+                if pts:
+                    pts.append(pts[0])
+
+                if not outer_polygon:
+                    outer_polygon = pts
+
+                zones.append({
+                    "zone_label": spec["label"],
+                    "depth_range_m": spec["range"],
+                    "fill_color": spec["color"],
+                    "polygon": pts,
+                })
+
+        if not outer_polygon:
+            r = 0.4
+            outer_polygon = [
+                [round(landfall_lon - r, 4), round(landfall_lat - r, 4)],
+                [round(landfall_lon + r, 4), round(landfall_lat - r, 4)],
+                [round(landfall_lon + r, 4), round(landfall_lat + r, 4)],
+                [round(landfall_lon - r, 4), round(landfall_lat + r, 4)],
+                [round(landfall_lon - r, 4), round(landfall_lat - r, 4)],
+            ]
+
+        return outer_polygon, zones

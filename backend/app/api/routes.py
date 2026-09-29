@@ -10,21 +10,35 @@ Refactored domain-driven endpoints:
 - /api/system/*         -> Authoritative source health & provenance
 """
 
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 from app.config import get_settings
-from app.data_sources.gdacs.gdacs_adapter import GDACSAdapter
+from app.data_sources.gdacs.gdacs_adapter import GDACSAdapter, calculate_bearing
 from app.data_sources.gee.gee_adapter import GEEAdapter
 from app.data_sources.ibtracs.ibtracs_adapter import IBTrACSAdapter
 from app.data_sources.imd.imd_adapter import IMDAdapter
 from app.data_sources.open_meteo.open_meteo_adapter import OpenMeteoAdapter
 from app.data_sources.osm.osm_adapter import OSMAdapter
-from app.domain.cyclone import LiveCycloneStatusResponse
+from app.domain.coastline import get_distance_to_coast_km, haversine_km
+from app.domain.cyclone import (
+    ForecastTimestepRisk,
+    LiveCycloneStatusResponse,
+    LiveForecastRiskResponse,
+)
 from app.domain.provenance import DataMode, DataSourceMeta
 from app.domain.risk import ModelledRiskResult
-from app.services.advisory_engine import AdvisoryEngineService
+from app.services.advisory_engine import AdvisoryEngineService, VisualAssessmentSummary
+from app.services.dispatch_engine import DispatchEngineService, DispatchRecord, RecipientContact
 from app.services.live_monitor import LiveMonitorService, LiveOperationsSnapshot
+from app.services.parametric_engine import (
+    ParametricEngineService,
+    ParametricEvaluationResult,
+    ParametricPolicy,
+    PayoutAuditCertificate,
+)
 from app.services.report_service import OperationalReport, ReportService
 from app.services.risk_engine import RiskEngineService
 from app.services.simulation_engine import (
@@ -73,6 +87,8 @@ advisory_engine = AdvisoryEngineService(
     model_name=settings.gemini_model,
 )
 report_service = ReportService()
+dispatch_engine = DispatchEngineService(report_service=report_service)
+parametric_engine = ParametricEngineService()
 
 # In-memory caches keyed strictly by storm_id + step_index + timestamp
 _storm_risk_cache: Dict[str, Dict[str, Any]] = {}
@@ -266,6 +282,238 @@ async def get_live_cyclone_risk() -> Dict[str, Any]:
         "features": features,
     }
 
+
+@router.get("/storms/live/forecast-risk", summary="Get predictive infrastructure impact along live forecast track")
+async def get_live_forecast_risk() -> Dict[str, Any]:
+    """Evaluate infrastructure risk across future forecast track waypoints (+0h, +6h, +12h, etc.)."""
+    gdacs_status = await gdacs_adapter.get_live_cyclone_status()
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    if gdacs_status.live_status == "UNAVAILABLE":
+        return LiveForecastRiskResponse(
+            live_status="UNAVAILABLE",
+            total_forecast_steps=0,
+            forecast_timesteps=[],
+            message="Live GDACS cyclone tracking feed is currently unavailable.",
+        ).model_dump()
+
+    if gdacs_status.live_status == "CALM" or not gdacs_status.cyclone:
+        return LiveForecastRiskResponse(
+            live_status="CALM",
+            total_forecast_steps=0,
+            forecast_timesteps=[],
+            message="No active tropical cyclone detected in North Indian Ocean basin. Forward forecast risk is calm.",
+        ).model_dump()
+
+    c = gdacs_status.cyclone
+    infra_assets = await osm_adapter.fetch_infrastructure()
+
+    # Extract forecast coordinates:
+    forecast_points: List[Tuple[float, float, str]] = []  # (lat, lon, label)
+    forecast_points.append((c.current_lat, c.current_lon, "+0h (Current Position)"))
+
+    if c.track:
+        step_idx = 1
+        for tf in c.track:
+            props = tf.get("properties") or {}
+            if props.get("feature_type") == "forecast_track":
+                geom = tf.get("geometry") or {}
+                coords = geom.get("coordinates") or []
+                if geom.get("type") == "LineString":
+                    for pt in coords:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                            p_lat = float(pt[1])
+                            p_lon = float(pt[0])
+                            # Avoid duplicate of step 0 if within 5km
+                            if haversine_km(c.current_lat, c.current_lon, p_lat, p_lon) > 5.0:
+                                label = f"+{step_idx * 6}h"
+                                forecast_points.append((p_lat, p_lon, label))
+                                step_idx += 1
+                                if step_idx > 8:  # Cap at 48h (8 steps)
+                                    break
+                if step_idx > 8:
+                    break
+
+    # Derive forward speed and approach heading
+    forward_speed_kmh: Optional[float] = None
+    approach_heading: Optional[float] = c.heading_deg
+
+    if len(forecast_points) >= 2:
+        dist_0_1 = haversine_km(
+            forecast_points[0][0],
+            forecast_points[0][1],
+            forecast_points[1][0],
+            forecast_points[1][1],
+        )
+        forward_speed_kmh = round(dist_0_1 / 6.0, 1)  # 6 hours between bulletined forecast steps
+        if approach_heading is None:
+            approach_heading = calculate_bearing(
+                forecast_points[0][0],
+                forecast_points[0][1],
+                forecast_points[1][0],
+                forecast_points[1][1],
+            )
+
+    # Compute landfall ETA
+    landfall_eta_hours: Optional[float] = None
+    projected_landfall_district: Optional[str] = None
+
+    # Check minimum distance to coast along track
+    min_dist_coast = get_distance_to_coast_km(c.current_lat, c.current_lon)
+    if min_dist_coast <= 15.0:
+        landfall_eta_hours = 0.0
+    else:
+        for idx, (f_lat, f_lon, _) in enumerate(forecast_points):
+            d_coast = get_distance_to_coast_km(f_lat, f_lon)
+            if d_coast <= 15.0:
+                landfall_eta_hours = float(idx * 6.0)
+                break
+        if landfall_eta_hours is None and forward_speed_kmh and forward_speed_kmh > 0:
+            landfall_eta_hours = round(min_dist_coast / forward_speed_kmh, 1)
+
+    # Evaluate risk at each timestep
+    timesteps: List[ForecastTimestepRisk] = []
+    base_wind_kts = c.wind_speed_kts or 45.0
+    base_wind_kmh = c.wind_speed_kmh or round(base_wind_kts * 1.852, 1)
+
+    for idx, (t_lat, t_lon, label) in enumerate(forecast_points):
+        d_coast = get_distance_to_coast_km(t_lat, t_lon)
+        decay_factor = 0.85 if (d_coast <= 10.0 and idx > 2) else 1.0
+        step_wind_kts = round(base_wind_kts * decay_factor, 1)
+        step_wind_kmh = round(base_wind_kmh * decay_factor, 1)
+
+        step_evaluated: List[ModelledRiskResult] = []
+        for asset in infra_assets:
+            res = risk_engine.evaluate_asset(
+                asset=asset,
+                cyclone_lat=t_lat,
+                cyclone_lon=t_lon,
+                cyclone_wind_knots=step_wind_kts,
+                data_mode=DataMode.LIVE,
+            )
+            step_evaluated.append(res)
+
+        step_evaluated.sort(key=lambda a: a.modelled_risk_score, reverse=True)
+        max_risk = max((a.modelled_risk_score for a in step_evaluated), default=0.0)
+        crit_count = sum(1 for a in step_evaluated if a.risk_level in ["CRITICAL", "HIGH"])
+        impassable_roads = sum(1 for a in step_evaluated if a.access_status == "IMPASSABLE")
+        max_surge = max((a.surge_height_m for a in step_evaluated), default=0.0)
+        max_rain = max((a.rainfall_accum_24h_mm for a in step_evaluated), default=0.0)
+
+        top_district = "Coastal Sector"
+        for a in step_evaluated:
+            if a.district:
+                top_district = a.district
+                break
+
+        if idx == 0 and not projected_landfall_district:
+            projected_landfall_district = top_district
+
+        timesteps.append(
+            ForecastTimestepRisk(
+                step_index=idx,
+                forecast_label=label,
+                lat=t_lat,
+                lon=t_lon,
+                wind_speed_knots=step_wind_kts,
+                wind_speed_kmh=step_wind_kmh,
+                max_risk_score=max_risk,
+                critical_facilities_count=crit_count,
+                impassable_roads_count=impassable_roads,
+                peak_surge_m=max_surge,
+                max_rainfall_24h_mm=max_rain,
+                top_exposed_district=top_district,
+                evaluated_assets=[a.model_dump() for a in step_evaluated],
+            )
+        )
+
+    response = LiveForecastRiskResponse(
+        live_status="ACTIVE",
+        storm_name=c.storm_name,
+        event_id=c.event_id,
+        forward_speed_kmh=forward_speed_kmh,
+        approach_heading_deg=approach_heading,
+        landfall_eta_hours=landfall_eta_hours,
+        projected_landfall_district=projected_landfall_district,
+        total_forecast_steps=len(timesteps),
+        forecast_timesteps=timesteps,
+        provenance=DataSourceMeta(
+            source="GDACS Forecast Track & Nivara Predictive Risk Engine",
+            dataset="Dynamic Forward-Track Infrastructure Vulnerability Projection",
+            retrieved_at=now_str,
+            status=DataMode.LIVE,
+            confidence="HIGH",
+            is_forecast=True,
+            attribution="GDACS forecast geometry combined with OpenStreetMap arterial assets",
+        ),
+        message=f"Forecast predictive risk modeled across {len(timesteps)} forward trajectory waypoints.",
+    )
+    return response.model_dump()
+
+
+@router.get("/storms/live/advisory", summary="Get live operational emergency briefing and directives")
+async def get_live_advisory(district: Optional[str] = None) -> Dict[str, Any]:
+    """Generate Gemini 3.7 Flash operational emergency advisory for active cyclone."""
+    gdacs_status = await gdacs_adapter.get_live_cyclone_status()
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    if gdacs_status.live_status == "UNAVAILABLE":
+        return {
+            "status": "UNAVAILABLE",
+            "live_status": "UNAVAILABLE",
+            "message": "Live GDACS data unavailable. Cannot generate active operational briefing.",
+            "advisory": None,
+        }
+
+    if gdacs_status.live_status == "CALM" or not gdacs_status.cyclone:
+        return {
+            "status": "CALM",
+            "live_status": "CALM",
+            "message": "No active tropical cyclone detected in North Indian Ocean basin. Normal readiness protocols apply.",
+            "advisory": None,
+        }
+
+    c = gdacs_status.cyclone
+    infra_assets = await osm_adapter.fetch_infrastructure()
+
+    evaluated_assets: List[ModelledRiskResult] = []
+    for asset in infra_assets:
+        res = risk_engine.evaluate_asset(
+            asset=asset,
+            cyclone_lat=c.current_lat,
+            cyclone_lon=c.current_lon,
+            cyclone_wind_knots=c.wind_speed_kts,
+            data_mode=DataMode.LIVE,
+        )
+        evaluated_assets.append(res)
+
+    evaluated_assets.sort(key=lambda a: a.modelled_risk_score, reverse=True)
+
+    target_district = district or (evaluated_assets[0].district if evaluated_assets and evaluated_assets[0].district else "Purba Medinipur")
+    target_state = evaluated_assets[0].state if evaluated_assets and evaluated_assets[0].state else "West Bengal"
+    district_assets = [a for a in evaluated_assets if not district or a.district == target_district]
+    if not district_assets:
+        district_assets = evaluated_assets
+
+    briefing = await advisory_engine.generate_district_briefing(
+        district=target_district,
+        state=target_state,
+        storm_name=c.storm_name,
+        current_wind_knots=float(c.wind_speed_kts or 0.0),
+        assets=district_assets,
+        data_mode=DataMode.LIVE,
+    )
+
+    return {
+        "status": "ACTIVE",
+        "live_status": "ACTIVE",
+        "storm_name": c.storm_name,
+        "event_id": c.event_id,
+        "district": target_district,
+        "state": target_state,
+        "advisory": briefing.model_dump(),
+        "retrieved_at": now_str,
+    }
 
 
 @router.get("/storms/{storm_id}", summary="Get metadata for a specific storm")
@@ -555,3 +803,162 @@ async def generate_situation_report() -> Dict[str, Any]:
     snapshot = await live_monitor.get_live_operations_snapshot()
     report = report_service.generate_situation_report(snapshot.model_dump())
     return report.model_dump()
+
+
+# ==============================================================================
+# 6. GOOGLE EARTH ENGINE (GEE) SATELLITE LAYERS (PHASE 5)
+# ==============================================================================
+
+@router.get("/satellite/gee/status", summary="Operational status of Google Earth Engine integration")
+async def get_gee_status() -> Dict[str, Any]:
+    """Check connectivity and available datasets in Google Earth Engine."""
+    status_obj = gee_adapter.get_status()
+    return status_obj.model_dump()
+
+
+@router.get("/satellite/gee/layers", summary="Available satellite raster overlay layers")
+async def get_gee_layers() -> List[Dict[str, Any]]:
+    """List available authentic satellite overlay layers (Sentinel-1 SAR, Dynamic World, SRTM)."""
+    return gee_adapter.get_tile_layers()
+
+
+@router.get("/satellite/sar-flood", summary="Sentinel-1 SAR surface water anomaly flood extent")
+async def get_sar_flood_extent() -> Dict[str, Any]:
+    """Retrieve Sentinel-1 SAR C-band water backscatter anomalies and flood polygons."""
+    sar_data = gee_adapter.get_sar_flood_raster()
+    return sar_data.model_dump()
+
+
+@router.get("/satellite/land-cover", summary="Query 10m Dynamic World land cover at point")
+async def get_point_land_cover(
+    lat: float = Query(..., ge=15.0, le=25.0),
+    lon: float = Query(..., ge=80.0, le=92.0),
+) -> Dict[str, Any]:
+    """Query Dynamic World 10m land cover class and physical surface roughness multiplier."""
+    info = gee_adapter.get_land_cover_at_point(lat, lon)
+    return info.model_dump()
+
+
+# ==============================================================================
+# 7. AUTOMATED EARLY-WARNING ADVISORY DISPATCH ENGINE (PHASE 6)
+# ==============================================================================
+
+class AdvisoryDispatchRequest(BaseModel):
+    storm_name: str = "TROPICAL CYCLONE"
+    alert_level: str = "Red"
+    wind_speed_kmh: float = 120.0
+    heading_deg: Optional[float] = None
+    peak_surge_m: float = 2.5
+    affected_districts: Optional[List[str]] = None
+    channels: Optional[List[str]] = None
+    recipient_ids: Optional[List[str]] = None
+
+
+@router.get("/advisory/recipients", summary="Authoritative disaster management recipients directory")
+async def get_advisory_recipients() -> List[Dict[str, Any]]:
+    """List registered District Magistrates, Municipal Commissioners, and SEOC endpoints."""
+    return [r.model_dump() for r in dispatch_engine.get_recipients()]
+
+
+@router.get("/advisory/cap.xml", summary="Generate OASIS Common Alerting Protocol (CAP v1.2) XML")
+async def get_cap_alert_xml() -> Response:
+    """Generate official CAP v1.2 XML compliant emergency alert."""
+    cyclone_status = await gdacs_adapter.get_live_cyclone_status()
+    if cyclone_status.cyclone:
+        c = cyclone_status.cyclone
+        xml_str = dispatch_engine.generate_cap_xml(
+            storm_name=c.storm_name,
+            alert_level=c.alert_level or "Orange",
+            wind_speed_kmh=c.wind_speed_kmh or 95.0,
+            heading_deg=c.heading_deg,
+            peak_surge_m=2.8,
+            affected_districts=["Purba Medinipur", "South 24 Parganas"],
+        )
+    else:
+        xml_str = dispatch_engine.generate_cap_xml(
+            storm_name="EXERCISE_NORTH_INDIAN_OCEAN",
+            alert_level="Yellow",
+            wind_speed_kmh=65.0,
+            heading_deg=35.0,
+            peak_surge_m=1.2,
+            affected_districts=["Coastal Zone"],
+        )
+    return Response(content=xml_str, media_type="application/xml")
+
+
+@router.post("/advisory/dispatch", summary="Execute automated multi-channel advisory dispatch")
+async def execute_advisory_dispatch(req: AdvisoryDispatchRequest) -> Dict[str, Any]:
+    """Dispatch emergency warnings across CAP XML, Webhooks, SMS, and SitRep channels."""
+    record = dispatch_engine.dispatch_advisories(
+        storm_name=req.storm_name,
+        alert_level=req.alert_level,
+        wind_speed_kmh=req.wind_speed_kmh,
+        heading_deg=req.heading_deg,
+        peak_surge_m=req.peak_surge_m,
+        affected_districts=req.affected_districts,
+        channels=req.channels,
+        recipient_ids=req.recipient_ids,
+    )
+    return record.model_dump()
+
+
+@router.get("/advisory/dispatch/log", summary="Retrieve cryptographic dispatch audit ledger")
+async def get_dispatch_log() -> List[Dict[str, Any]]:
+    """Inspect verifiable dispatch log with SHA-256 receipts and delivery timestamps."""
+    return [r.model_dump() for r in dispatch_engine.get_dispatch_log()]
+
+
+# ==============================================================================
+# 8. MULTIMODAL REASONING & PARAMETRIC LIQUIDITY TRIGGERS (PHASE 7)
+# ==============================================================================
+
+class MultimodalAnalyzeRequest(BaseModel):
+    image_base64: str
+    storm_name: str = "ACTIVE CYCLONE"
+    context_metadata: Optional[Dict[str, Any]] = None
+
+
+class ParametricEvaluateRequest(BaseModel):
+    storm_name: str = "ACTIVE CYCLONE"
+    wind_speed_kmh: float = 120.0
+    peak_surge_m: float = 2.5
+    landfall_eta_hours: Optional[float] = None
+    impassable_roads_count: int = 0
+    max_rainfall_24h_mm: float = 0.0
+
+
+@router.post("/advisory/multimodal-analyze", summary="Gemini 3.7 Flash multimodal visual reasoning on satellite/map canvas")
+async def analyze_multimodal_satellite_view(req: MultimodalAnalyzeRequest) -> Dict[str, Any]:
+    """Execute Gemini 3.7 Flash visual reasoning on uploaded map/satellite snapshot."""
+    assessment = await advisory_engine.analyze_multimodal_visual(
+        image_base64=req.image_base64,
+        storm_name=req.storm_name,
+        context_metadata=req.context_metadata,
+    )
+    return assessment.model_dump()
+
+
+@router.get("/parametric/policies", summary="List active parametric insurance contracts")
+async def get_parametric_policies() -> List[Dict[str, Any]]:
+    """List active index-linked parametric policies with trigger thresholds and coverage limits."""
+    return [p.model_dump() for p in parametric_engine.get_policies()]
+
+
+@router.post("/parametric/evaluate", summary="Evaluate parametric physical triggers and calculate pre-landfall payout")
+async def evaluate_parametric_payout(req: ParametricEvaluateRequest) -> Dict[str, Any]:
+    """Evaluate storm parameters against policy index gates and certify liquidity payouts."""
+    result = parametric_engine.evaluate_policies(
+        storm_name=req.storm_name,
+        wind_speed_kmh=req.wind_speed_kmh,
+        peak_surge_m=req.peak_surge_m,
+        landfall_eta_hours=req.landfall_eta_hours,
+        impassable_roads_count=req.impassable_roads_count,
+        max_rainfall_24h_mm=req.max_rainfall_24h_mm,
+    )
+    return result.model_dump()
+
+
+@router.get("/parametric/certificates", summary="Retrieve issued cryptographic parametric payout certificates")
+async def get_payout_certificates() -> List[Dict[str, Any]]:
+    """Retrieve audit ledger of certified pre-landfall parametric liquidity disbursements."""
+    return [c.model_dump() for c in parametric_engine.get_issued_certificates()]
